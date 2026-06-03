@@ -38,6 +38,7 @@ import {
   Receipt,
   ChevronDown,
   ChevronUp,
+  Pencil,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -174,6 +175,8 @@ export function DebtPlanner() {
     note: "",
   });
   const [showPaymentHistory, setShowPaymentHistory] = useState(false);
+  const [editBalanceDialog, setEditBalanceDialog] = useState<string | null>(null);
+  const [editBalanceForm, setEditBalanceForm] = useState({ balance: "", reason: "" });
 
   useEffect(() => {
     const savedDebts = localStorage.getItem("ft-debts");
@@ -319,6 +322,28 @@ export function DebtPlanner() {
     },
     [payments]
   );
+
+  const openEditBalanceDialog = useCallback(
+    (debtId: string) => {
+      const debt = debts.find((d) => d.id === debtId);
+      if (!debt) return;
+      setEditBalanceDialog(debtId);
+      setEditBalanceForm({ balance: debt.balance.toString(), reason: "" });
+    },
+    [debts]
+  );
+
+  const updateBalance = useCallback(() => {
+    if (!editBalanceDialog || editBalanceForm.balance === "") return;
+    const newBalance = parseFloat(editBalanceForm.balance);
+    if (isNaN(newBalance) || newBalance < 0) return;
+    setDebts((prev) =>
+      prev.map((d) =>
+        d.id === editBalanceDialog ? { ...d, balance: newBalance } : d
+      )
+    );
+    setEditBalanceDialog(null);
+  }, [editBalanceDialog, editBalanceForm]);
 
   const sortedDebts = useMemo(() => {
     return [...debts].sort((a, b) =>
@@ -513,6 +538,15 @@ export function DebtPlanner() {
                           title="Log a payment"
                         >
                           <Receipt className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => openEditBalanceDialog(debt.id)}
+                          className="text-gray-400 hover:text-blue-400 hover:bg-transparent p-1 h-auto"
+                          title="Edit balance"
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
                         </Button>
                         <Button
                           variant="ghost"
@@ -911,6 +945,71 @@ export function DebtPlanner() {
                 disabled={!paymentForm.amount || parseFloat(paymentForm.amount) <= 0}
               >
                 Log Payment
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Balance Dialog */}
+      <Dialog open={!!editBalanceDialog} onOpenChange={(v) => !v && setEditBalanceDialog(null)}>
+        <DialogContent className="bg-gray-900 border-gray-700 text-white sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-white">
+              Edit Balance —{" "}
+              <span className="text-blue-400">
+                {debts.find((d) => d.id === editBalanceDialog)?.name}
+              </span>
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 pt-2">
+            {editBalanceDialog && (
+              <div className="bg-gray-800 rounded-lg p-3 text-sm">
+                <span className="text-gray-400">Current balance: </span>
+                <span className="text-red-400 font-semibold">
+                  ${debts.find((d) => d.id === editBalanceDialog)?.balance.toLocaleString()}
+                </span>
+              </div>
+            )}
+            <div>
+              <Label className="text-gray-300 text-sm">New Balance ($)</Label>
+              <Input
+                type="number"
+                min="0"
+                step="0.01"
+                value={editBalanceForm.balance}
+                onChange={(e) => setEditBalanceForm((f) => ({ ...f, balance: e.target.value }))}
+                placeholder="0.00"
+                className="bg-gray-800 border-gray-700 text-white mt-1 placeholder:text-gray-500"
+                autoFocus
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                Directly set the balance — use this for interest charges, statement corrections, or manual adjustments.
+              </p>
+            </div>
+            <div>
+              <Label className="text-gray-300 text-sm">Reason (optional)</Label>
+              <Input
+                value={editBalanceForm.reason}
+                onChange={(e) => setEditBalanceForm((f) => ({ ...f, reason: e.target.value }))}
+                placeholder="e.g. Interest charged, statement update"
+                className="bg-gray-800 border-gray-700 text-white mt-1 placeholder:text-gray-500"
+              />
+            </div>
+            <div className="flex gap-2 pt-1">
+              <Button
+                variant="outline"
+                onClick={() => setEditBalanceDialog(null)}
+                className="flex-1 border-gray-700 text-gray-300 hover:bg-gray-800"
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={updateBalance}
+                className="flex-1 bg-blue-600 hover:bg-blue-700"
+                disabled={editBalanceForm.balance === "" || parseFloat(editBalanceForm.balance) < 0}
+              >
+                Update Balance
               </Button>
             </div>
           </div>
