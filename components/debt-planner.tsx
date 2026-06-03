@@ -6,7 +6,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
-import { Separator } from "@/components/ui/separator";
 import { Progress } from "@/components/ui/progress";
 import {
   Dialog,
@@ -23,7 +22,6 @@ import {
   CartesianGrid,
   Tooltip,
   ResponsiveContainer,
-  Legend,
   BarChart,
   Bar,
   Cell,
@@ -37,6 +35,9 @@ import {
   Calendar,
   CheckCircle,
   AlertCircle,
+  Receipt,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -46,6 +47,14 @@ interface Debt {
   balance: number;
   interestRate: number;
   minimumPayment: number;
+}
+
+interface Payment {
+  id: string;
+  debtId: string;
+  amount: number;
+  date: string;
+  note: string;
 }
 
 interface PayoffResult {
@@ -81,7 +90,6 @@ function calculatePayoff(
   while (balances.some((b) => b > 0.01) && months < 600) {
     months++;
 
-    // Apply monthly interest
     for (let i = 0; i < balances.length; i++) {
       if (balances[i] <= 0) continue;
       const interest = balances[i] * (sorted[i].interestRate / 100 / 12);
@@ -89,7 +97,6 @@ function calculatePayoff(
       totalInterest += interest;
     }
 
-    // Apply minimum payments, collect freed-up payments
     let freed = 0;
     for (let i = 0; i < balances.length; i++) {
       if (balances[i] <= 0) {
@@ -104,7 +111,6 @@ function calculatePayoff(
       }
     }
 
-    // Apply extra + freed to focus debt
     let extra = extraPayment + freed;
     for (let i = 0; i < balances.length; i++) {
       if (balances[i] <= 0) continue;
@@ -151,6 +157,7 @@ const DEFAULT_DEBTS: Debt[] = [
 
 export function DebtPlanner() {
   const [debts, setDebts] = useState<Debt[]>([]);
+  const [payments, setPayments] = useState<Payment[]>([]);
   const [method, setMethod] = useState<"snowball" | "avalanche">("avalanche");
   const [extraPayment, setExtraPayment] = useState(300);
   const [open, setOpen] = useState(false);
@@ -160,14 +167,23 @@ export function DebtPlanner() {
     interestRate: "",
     minimumPayment: "",
   });
+  const [paymentDialog, setPaymentDialog] = useState<string | null>(null);
+  const [paymentForm, setPaymentForm] = useState({
+    amount: "",
+    date: new Date().toISOString().split("T")[0],
+    note: "",
+  });
+  const [showPaymentHistory, setShowPaymentHistory] = useState(false);
 
   useEffect(() => {
     const savedDebts = localStorage.getItem("ft-debts");
     const savedMethod = localStorage.getItem("ft-method");
     const savedExtra = localStorage.getItem("ft-extra");
+    const savedPayments = localStorage.getItem("ft-payments");
     setDebts(savedDebts ? JSON.parse(savedDebts) : DEFAULT_DEBTS);
     if (savedMethod) setMethod(savedMethod as "snowball" | "avalanche");
     if (savedExtra) setExtraPayment(parseFloat(savedExtra));
+    if (savedPayments) setPayments(JSON.parse(savedPayments));
   }, []);
 
   useEffect(() => {
@@ -178,6 +194,10 @@ export function DebtPlanner() {
     localStorage.setItem("ft-method", method);
     localStorage.setItem("ft-extra", extraPayment.toString());
   }, [method, extraPayment]);
+
+  useEffect(() => {
+    localStorage.setItem("ft-payments", JSON.stringify(payments));
+  }, [payments]);
 
   const avalancheResult = useMemo(
     () => calculatePayoff(debts, extraPayment, "avalanche"),
@@ -212,6 +232,21 @@ export function DebtPlanner() {
   const totalDebt = debts.reduce((s, d) => s + d.balance, 0);
   const totalMinimums = debts.reduce((s, d) => s + d.minimumPayment, 0);
 
+  // Payment-related computed values
+  const totalPaidByDebt = useMemo(() => {
+    const map: Record<string, number> = {};
+    for (const p of payments) {
+      map[p.debtId] = (map[p.debtId] || 0) + p.amount;
+    }
+    return map;
+  }, [payments]);
+
+  const recentPayments = useMemo(() => {
+    return [...payments]
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+      .slice(0, 20);
+  }, [payments]);
+
   const addDebt = useCallback(() => {
     if (!form.name || !form.balance || !form.minimumPayment) return;
     const d: Debt = {
@@ -228,7 +263,62 @@ export function DebtPlanner() {
 
   const deleteDebt = useCallback((id: string) => {
     setDebts((prev) => prev.filter((d) => d.id !== id));
+    setPayments((prev) => prev.filter((p) => p.debtId !== id));
   }, []);
+
+  const openPaymentDialog = useCallback((debtId: string) => {
+    setPaymentDialog(debtId);
+    setPaymentForm({
+      amount: "",
+      date: new Date().toISOString().split("T")[0],
+      note: "",
+    });
+  }, []);
+
+  const logPayment = useCallback(() => {
+    if (!paymentDialog || !paymentForm.amount) return;
+    const amount = parseFloat(paymentForm.amount);
+    if (isNaN(amount) || amount <= 0) return;
+
+    const payment: Payment = {
+      id: crypto.randomUUID(),
+      debtId: paymentDialog,
+      amount,
+      date: paymentForm.date,
+      note: paymentForm.note,
+    };
+
+    setPayments((prev) => [...prev, payment]);
+    setDebts((prev) =>
+      prev.map((d) =>
+        d.id === paymentDialog
+          ? { ...d, balance: Math.max(0, d.balance - amount) }
+          : d
+      )
+    );
+    setPaymentForm({
+      amount: "",
+      date: new Date().toISOString().split("T")[0],
+      note: "",
+    });
+    setPaymentDialog(null);
+  }, [paymentDialog, paymentForm]);
+
+  const deletePayment = useCallback(
+    (paymentId: string) => {
+      const payment = payments.find((p) => p.id === paymentId);
+      if (!payment) return;
+      setPayments((prev) => prev.filter((p) => p.id !== paymentId));
+      setDebts((prev) =>
+        prev.map((d) =>
+          d.id === payment.debtId
+            ? { ...d, balance: d.balance + payment.amount }
+            : d
+        )
+      );
+    },
+    [payments]
+  );
 
   const sortedDebts = useMemo(() => {
     return [...debts].sort((a, b) =>
@@ -374,31 +464,65 @@ export function DebtPlanner() {
               </div>
             ) : (
               debts.map((debt) => {
+                const paid = totalPaidByDebt[debt.id] || 0;
+                const originalBalance = debt.balance + paid;
+                const progressPct =
+                  originalBalance > 0 ? Math.round((paid / originalBalance) * 100) : 0;
+                const isPaidOff = debt.balance <= 0;
+
                 return (
                   <div key={debt.id} className="bg-gray-800 rounded-xl p-3 group">
-                    <div className="flex items-start justify-between">
+                    <div className="flex items-start justify-between gap-2">
                       <div className="flex-1 min-w-0">
-                        <div className="font-medium text-white text-sm truncate">{debt.name}</div>
+                        <div className="flex items-center gap-2">
+                          <div className="font-medium text-white text-sm truncate">{debt.name}</div>
+                          {isPaidOff && (
+                            <Badge className="bg-emerald-500/20 text-emerald-400 border-0 text-xs shrink-0">
+                              Paid Off
+                            </Badge>
+                          )}
+                        </div>
                         <div className="flex flex-wrap gap-x-3 mt-1">
-                          <span className="text-red-400 font-semibold text-sm">
+                          <span
+                            className={cn(
+                              "font-semibold text-sm",
+                              isPaidOff ? "text-emerald-400" : "text-red-400"
+                            )}
+                          >
                             ${debt.balance.toLocaleString()}
                           </span>
-                          <span className="text-gray-400 text-xs">
-                            {debt.interestRate}% APR
-                          </span>
-                          <span className="text-gray-400 text-xs">
-                            ${debt.minimumPayment}/mo min
-                          </span>
+                          <span className="text-gray-400 text-xs">{debt.interestRate}% APR</span>
+                          <span className="text-gray-400 text-xs">${debt.minimumPayment}/mo min</span>
                         </div>
+                        {paid > 0 && (
+                          <div className="mt-2 space-y-1">
+                            <div className="flex justify-between text-xs text-gray-500">
+                              <span>${paid.toLocaleString()} paid</span>
+                              <span>{progressPct}% done</span>
+                            </div>
+                            <Progress value={progressPct} className="h-1.5 bg-gray-700" />
+                          </div>
+                        )}
                       </div>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => deleteDebt(debt.id)}
-                        className="text-gray-600 hover:text-red-400 hover:bg-transparent p-1 h-auto opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
-                      >
-                        <Trash className="h-3.5 w-3.5" />
-                      </Button>
+                      <div className="flex items-center gap-0.5 flex-shrink-0">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => openPaymentDialog(debt.id)}
+                          className="text-gray-400 hover:text-emerald-400 hover:bg-transparent p-1 h-auto"
+                          title="Log a payment"
+                        >
+                          <Receipt className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => deleteDebt(debt.id)}
+                          className="text-gray-600 hover:text-red-400 hover:bg-transparent p-1 h-auto opacity-0 group-hover:opacity-100 transition-opacity"
+                        >
+                          <Trash className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
                     </div>
                   </div>
                 );
@@ -593,9 +717,7 @@ export function DebtPlanner() {
             <CardHeader className="pb-3">
               <CardTitle className="text-white text-base">
                 Payoff Order —{" "}
-                <span
-                  className={method === "avalanche" ? "text-blue-400" : "text-emerald-400"}
-                >
+                <span className={method === "avalanche" ? "text-blue-400" : "text-emerald-400"}>
                   {method === "avalanche" ? "Avalanche" : "Snowball"}
                 </span>
               </CardTitle>
@@ -643,6 +765,157 @@ export function DebtPlanner() {
           </Card>
         </div>
       )}
+
+      {/* Payment History */}
+      <Card className="bg-gray-900 border-gray-800">
+        <CardHeader className="pb-3">
+          <button
+            onClick={() => setShowPaymentHistory((v) => !v)}
+            className="flex items-center justify-between w-full text-left"
+          >
+            <div className="flex items-center gap-2">
+              <CardTitle className="text-white text-base">Payment History</CardTitle>
+              {payments.length > 0 && (
+                <Badge className="bg-emerald-500/20 text-emerald-400 border-0 text-xs">
+                  {payments.length} payment{payments.length !== 1 ? "s" : ""}
+                </Badge>
+              )}
+            </div>
+            {showPaymentHistory ? (
+              <ChevronUp className="h-4 w-4 text-gray-400" />
+            ) : (
+              <ChevronDown className="h-4 w-4 text-gray-400" />
+            )}
+          </button>
+        </CardHeader>
+        {showPaymentHistory && (
+          <CardContent className="pt-0">
+            {recentPayments.length === 0 ? (
+              <div className="text-center text-gray-500 text-sm py-6">
+                No payments logged yet. Click the{" "}
+                <Receipt className="inline h-3.5 w-3.5 mx-0.5 align-text-bottom" /> icon on any
+                debt to record a payment.
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {recentPayments.map((payment) => {
+                  const debt = debts.find((d) => d.id === payment.debtId);
+                  return (
+                    <div
+                      key={payment.id}
+                      className="flex items-center gap-3 bg-gray-800 rounded-lg px-3 py-2.5 group"
+                    >
+                      <div className="p-1.5 rounded-lg bg-emerald-500/10 flex-shrink-0">
+                        <Receipt className="h-3.5 w-3.5 text-emerald-400" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-sm font-semibold text-emerald-400">
+                            ${payment.amount.toLocaleString()}
+                          </span>
+                          <span className="text-sm text-white truncate">
+                            {debt?.name ?? "Deleted Debt"}
+                          </span>
+                          {payment.note && (
+                            <span className="text-xs text-gray-500 truncate">· {payment.note}</span>
+                          )}
+                        </div>
+                        <div className="text-xs text-gray-500 mt-0.5">
+                          {new Date(payment.date + "T00:00:00").toLocaleDateString("default", {
+                            month: "short",
+                            day: "numeric",
+                            year: "numeric",
+                          })}
+                        </div>
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => deletePayment(payment.id)}
+                        className="text-gray-600 hover:text-red-400 hover:bg-transparent p-1 h-auto opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
+                        title="Undo payment"
+                      >
+                        <Trash className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </CardContent>
+        )}
+      </Card>
+
+      {/* Log Payment Dialog */}
+      <Dialog open={!!paymentDialog} onOpenChange={(v) => !v && setPaymentDialog(null)}>
+        <DialogContent className="bg-gray-900 border-gray-700 text-white sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-white">
+              Log Payment —{" "}
+              <span className="text-emerald-400">
+                {debts.find((d) => d.id === paymentDialog)?.name}
+              </span>
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 pt-2">
+            {paymentDialog && (
+              <div className="bg-gray-800 rounded-lg p-3 text-sm">
+                <span className="text-gray-400">Current balance: </span>
+                <span className="text-red-400 font-semibold">
+                  ${debts.find((d) => d.id === paymentDialog)?.balance.toLocaleString()}
+                </span>
+              </div>
+            )}
+            <div>
+              <Label className="text-gray-300 text-sm">Payment Amount ($)</Label>
+              <Input
+                type="number"
+                min="0"
+                step="0.01"
+                value={paymentForm.amount}
+                onChange={(e) => setPaymentForm((f) => ({ ...f, amount: e.target.value }))}
+                placeholder="250.00"
+                className="bg-gray-800 border-gray-700 text-white mt-1 placeholder:text-gray-500"
+                autoFocus
+              />
+            </div>
+            <div>
+              <Label className="text-gray-300 text-sm">Payment Date</Label>
+              <Input
+                type="date"
+                value={paymentForm.date}
+                onChange={(e) => setPaymentForm((f) => ({ ...f, date: e.target.value }))}
+                className="bg-gray-800 border-gray-700 text-white mt-1"
+              />
+            </div>
+            <div>
+              <Label className="text-gray-300 text-sm">Note (optional)</Label>
+              <Input
+                value={paymentForm.note}
+                onChange={(e) => setPaymentForm((f) => ({ ...f, note: e.target.value }))}
+                placeholder="e.g. Extra payment, bonus applied"
+                className="bg-gray-800 border-gray-700 text-white mt-1 placeholder:text-gray-500"
+              />
+            </div>
+            <div className="flex gap-2 pt-1">
+              <Button
+                variant="outline"
+                onClick={() => setPaymentDialog(null)}
+                className="flex-1 border-gray-700 text-gray-300 hover:bg-gray-800"
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={logPayment}
+                className="flex-1 bg-emerald-600 hover:bg-emerald-700"
+                disabled={!paymentForm.amount || parseFloat(paymentForm.amount) <= 0}
+              >
+                Log Payment
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
