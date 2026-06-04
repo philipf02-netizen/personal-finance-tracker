@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -43,8 +43,13 @@ import {
   ArrowUp,
   ArrowDown,
   TrendingUp,
+  Upload,
+  AlertCircle,
+  Check,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+
+// ─── Interfaces ──────────────────────────────────────────────────────────────
 
 interface Transaction {
   id: string;
@@ -54,6 +59,18 @@ interface Transaction {
   amount: number;
   date: string;
 }
+
+interface ImportRow {
+  id: string;
+  date: string;
+  description: string;
+  amount: number;
+  type: "income" | "expense";
+  category: string;
+  skip: boolean; // auto-flagged payments/transfers
+}
+
+// ─── Constants ───────────────────────────────────────────────────────────────
 
 const EXPENSE_CATEGORIES = [
   "Housing",
@@ -103,6 +120,314 @@ const DEFAULT_TRANSACTIONS: Transaction[] = [
   { id: "8", type: "income", category: "Freelance", description: "Side project", amount: 800, date: today },
 ];
 
+// ─── CSV Parsing Utilities ────────────────────────────────────────────────────
+
+function parseCSVLine(line: string): string[] {
+  const result: string[] = [];
+  let current = "";
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (inQuotes && line[i + 1] === '"') { current += '"'; i++; }
+      else inQuotes = !inQuotes;
+    } else if (ch === "," && !inQuotes) {
+      result.push(current.trim());
+      current = "";
+    } else {
+      current += ch;
+    }
+  }
+  result.push(current.trim());
+  return result;
+}
+
+type BankType = "chase" | "bofa-cc" | "bofa-checking" | "citi" | "amex" | "unknown";
+
+function detectBank(headers: string[]): BankType {
+  const h = headers.map((s) => s.toLowerCase().replace(/['"]/g, "").trim());
+  const joined = h.join("|");
+  if (h.some((v) => v === "transaction date") && h.some((v) => v === "post date")) return "chase";
+  if (h.some((v) => v === "posted date") && h.some((v) => v.includes("reference number"))) return "bofa-cc";
+  if (h.some((v) => v.includes("running bal"))) return "bofa-checking";
+  if (h.some((v) => v === "debit") && h.some((v) => v === "credit") && h.some((v) => v === "status")) return "citi";
+  if (h.some((v) => v.includes("extended details")) || h.some((v) => v.includes("appears on your statement"))) return "amex";
+  // Fallback: generic bank CSV (date, description, amount)
+  if (h.some((v) => v === "date") && h.some((v) => v.includes("amount"))) return "bofa-checking";
+  return "unknown";
+}
+
+const BANK_CATEGORY_MAP: Record<string, string> = {
+  "food & drink": "Food & Dining",
+  "food and drink": "Food & Dining",
+  "groceries": "Food & Dining",
+  "restaurants": "Food & Dining",
+  "dining": "Food & Dining",
+  "supermarkets": "Food & Dining",
+  "gas": "Transportation",
+  "gas stations": "Transportation",
+  "travel": "Transportation",
+  "auto & transport": "Transportation",
+  "auto and transport": "Transportation",
+  "airlines": "Transportation",
+  "parking": "Transportation",
+  "rideshare": "Transportation",
+  "entertainment": "Entertainment",
+  "arts": "Entertainment",
+  "movies": "Entertainment",
+  "music": "Entertainment",
+  "shopping": "Shopping",
+  "merchandise & supplies": "Shopping",
+  "merchandise and supplies": "Shopping",
+  "retail": "Shopping",
+  "bills & utilities": "Utilities",
+  "bills and utilities": "Utilities",
+  "utilities": "Utilities",
+  "cable & internet": "Utilities",
+  "cable and internet": "Utilities",
+  "telephone": "Utilities",
+  "health & wellness": "Healthcare",
+  "health and wellness": "Healthcare",
+  "medical services": "Healthcare",
+  "healthcare": "Healthcare",
+  "pharmacy": "Healthcare",
+  "personal care": "Healthcare",
+  "gym": "Healthcare",
+  "education": "Education",
+  "tuition": "Education",
+  "home": "Housing",
+  "mortgage & rent": "Housing",
+  "mortgage and rent": "Housing",
+  "insurance": "Insurance",
+};
+
+const DESC_PATTERN_MAP: Array<[RegExp, string]> = [
+  [/restaurant|cafe|coffee|pizza|mcdonald|starbucks|chipotle|doordash|uber eats|grubhub|panera|subway|chick.fil|taco bell|burger king|wendy|olive garden|applebee|denny|ihop|waffle house|five guys|in.n.out|shake shack|panda express|noodles/i, "Food & Dining"],
+  [/grocery|safeway|kroger|whole foods|trader joe|aldi|publix|heb |food lion|smart & final|vons|ralphs|sprouts|costco food|walmart grocery|target grocery/i, "Food & Dining"],
+  [/netflix|hulu|spotify|disney\+|hbo|apple tv|peacock|paramount\+|youtube premium|sling |fubo|crunchyroll|amazon prime/i, "Entertainment"],
+  [/amazon(?! web services)(?! aws)|walmart(?! grocery)|target(?! grocery)|costco|best buy|home depot|lowes|tj maxx|marshalls|nordstrom|macy|gap |old navy|h&m|zara|wayfair|ikea|ebay/i, "Shopping"],
+  [/\buber(?! eats)\b|lyft|shell |chevron|bp (?!harris|biden)|exxon|mobil|marathon|sunoco|speedway|citgo|arco |kwik|circle k|gas station|speedway|pilot flying|loves travel/i, "Transportation"],
+  [/at&t|verizon|t-mobile|comcast|xfinity|spectrum |cox |centurylink|frontier comm|pg&e|southern cal edison|con edison|duke energy|dominion energy|internet service/i, "Utilities"],
+  [/cvs |walgreen|rite aid |pharmacy|urgent care|planet fitness|24 hour fitness|la fitness|ymca|equinox|anytime fitness|crunch fitness|orange theory/i, "Healthcare"],
+  [/rent |mortgage|landlord|apartment|hoa |homeowners assoc/i, "Housing"],
+  [/state farm|allstate|geico |progressive |liberty mutual|usaa insurance|travelers insurance|farmers insurance/i, "Insurance"],
+];
+
+function guessExpenseCategory(bankCat: string, description: string): string {
+  const catKey = bankCat.toLowerCase().trim();
+  if (BANK_CATEGORY_MAP[catKey]) return BANK_CATEGORY_MAP[catKey];
+  for (const [re, cat] of DESC_PATTERN_MAP) {
+    if (re.test(description)) return cat;
+  }
+  return "Other";
+}
+
+function guessIncomeCategory(description: string): string {
+  const d = description.toUpperCase();
+  if (/PAYROLL|SALARY|DIRECT DEP|EMPLOYER|PAYCHEX|ADP |INTUIT PAY/.test(d)) return "Salary";
+  if (/FREELANCE|CONSULTING|INVOICE|UPWORK|FIVERR/.test(d)) return "Freelance";
+  if (/DIVIDEND|INTEREST|FIDELITY|VANGUARD|SCHWAB|ROBINHOOD|COINBASE|INVESTMENT/.test(d)) return "Investment";
+  if (/BONUS/.test(d)) return "Bonus";
+  return "Other";
+}
+
+function isSkippable(description: string, chaseType?: string): boolean {
+  if (chaseType === "Payment") return true;
+  const d = description.toUpperCase();
+  return /PAYMENT THANK YOU|AUTOPAY PAYMENT|ONLINE PMT|MOBILE PAYMENT|ONLINE PAYMENT|AUTOMATIC PAYMENT|AUTO PAY/.test(d) &&
+    !/DOWN PAYMENT/.test(d);
+}
+
+function formatDate(raw: string): string {
+  // Convert MM/DD/YYYY → YYYY-MM-DD
+  const m = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (m) return `${m[3]}-${m[1].padStart(2, "0")}-${m[2].padStart(2, "0")}`;
+  return raw;
+}
+
+function parseChase(rows: string[][], headers: string[]): ImportRow[] {
+  const h = headers.map((s) => s.toLowerCase().trim());
+  const idx = {
+    date: h.findIndex((v) => v.includes("transaction date")),
+    desc: h.findIndex((v) => v === "description"),
+    cat: h.findIndex((v) => v === "category"),
+    type: h.findIndex((v) => v === "type"),
+    amount: h.findIndex((v) => v === "amount"),
+  };
+  return rows
+    .filter((r) => r.length > 3 && r[idx.amount])
+    .map((row) => {
+      const rawAmount = parseFloat((row[idx.amount] || "0").replace(/[$,\s]/g, ""));
+      const chaseType = (row[idx.type] || "").trim();
+      const description = (row[idx.desc] || "").trim();
+      const bankCat = (row[idx.cat] || "").trim();
+      const isExpense = rawAmount < 0;
+      return {
+        id: crypto.randomUUID(),
+        date: formatDate((row[idx.date] || "").trim()),
+        description,
+        amount: Math.abs(rawAmount),
+        type: isExpense ? "expense" : "income",
+        category: isExpense ? guessExpenseCategory(bankCat, description) : guessIncomeCategory(description),
+        skip: isSkippable(description, chaseType),
+      };
+    });
+}
+
+function parseBofACC(rows: string[][], headers: string[]): ImportRow[] {
+  const h = headers.map((s) => s.toLowerCase().trim());
+  const idx = {
+    date: h.findIndex((v) => v.includes("posted date")),
+    payee: h.findIndex((v) => v === "payee"),
+    amount: h.findIndex((v) => v === "amount"),
+  };
+  return rows
+    .filter((r) => r.length > 2 && r[idx.amount])
+    .map((row) => {
+      const rawAmount = parseFloat((row[idx.amount] || "0").replace(/[$,\s]/g, ""));
+      const description = (row[idx.payee] || "").trim();
+      const isExpense = rawAmount > 0; // BofA CC: positive = charge
+      return {
+        id: crypto.randomUUID(),
+        date: formatDate((row[idx.date] || "").trim()),
+        description,
+        amount: Math.abs(rawAmount),
+        type: isExpense ? "expense" : "income",
+        category: isExpense ? guessExpenseCategory("", description) : guessIncomeCategory(description),
+        skip: isSkippable(description),
+      };
+    });
+}
+
+function parseBofAChecking(rows: string[][], headers: string[]): ImportRow[] {
+  const h = headers.map((s) => s.toLowerCase().trim());
+  const dateIdx = h.findIndex((v) => v === "date");
+  const descIdx = h.findIndex((v) => v === "description");
+  const amtIdx = h.findIndex((v) => v === "amount");
+  return rows
+    .filter((r) => r.length > 2 && r[amtIdx])
+    .map((row) => {
+      const rawAmount = parseFloat((row[amtIdx] || "0").replace(/[$,\s]/g, ""));
+      const description = (row[descIdx] || "").trim();
+      const isExpense = rawAmount < 0; // BofA checking: negative = debit
+      return {
+        id: crypto.randomUUID(),
+        date: formatDate((row[dateIdx] || "").trim()),
+        description,
+        amount: Math.abs(rawAmount),
+        type: isExpense ? "expense" : "income",
+        category: isExpense ? guessExpenseCategory("", description) : guessIncomeCategory(description),
+        skip: isSkippable(description),
+      };
+    });
+}
+
+function parseCiti(rows: string[][], headers: string[]): ImportRow[] {
+  const h = headers.map((s) => s.toLowerCase().trim());
+  const idx = {
+    date: h.findIndex((v) => v === "date"),
+    desc: h.findIndex((v) => v === "description"),
+    debit: h.findIndex((v) => v === "debit"),
+    credit: h.findIndex((v) => v === "credit"),
+  };
+  return rows
+    .filter((r) => r.length > 2)
+    .map((row) => {
+      const debit = parseFloat((row[idx.debit] || "0").replace(/[$,\s]/g, "")) || 0;
+      const credit = parseFloat((row[idx.credit] || "0").replace(/[$,\s]/g, "")) || 0;
+      const description = (row[idx.desc] || "").trim();
+      const isExpense = debit > 0;
+      const amount = isExpense ? debit : credit;
+      return {
+        id: crypto.randomUUID(),
+        date: formatDate((row[idx.date] || "").trim()),
+        description,
+        amount,
+        type: isExpense ? "expense" : "income",
+        category: isExpense ? guessExpenseCategory("", description) : guessIncomeCategory(description),
+        skip: !isExpense && isSkippable(description),
+      };
+    });
+}
+
+function parseAmex(rows: string[][], headers: string[]): ImportRow[] {
+  const h = headers.map((s) => s.toLowerCase().trim());
+  const idx = {
+    date: h.findIndex((v) => v === "date"),
+    desc: h.findIndex((v) => v === "description"),
+    amount: h.findIndex((v) => v === "amount"),
+    cat: h.findIndex((v) => v === "category"),
+  };
+  return rows
+    .filter((r) => r.length > 2 && r[idx.amount])
+    .map((row) => {
+      const rawAmount = parseFloat((row[idx.amount] || "0").replace(/[$,\s]/g, ""));
+      const description = (row[idx.desc] || "").trim();
+      const bankCat = idx.cat >= 0 ? (row[idx.cat] || "").trim() : "";
+      const isExpense = rawAmount > 0; // Amex: positive = charge
+      return {
+        id: crypto.randomUUID(),
+        date: formatDate((row[idx.date] || "").trim()),
+        description,
+        amount: Math.abs(rawAmount),
+        type: isExpense ? "expense" : "income",
+        category: isExpense ? guessExpenseCategory(bankCat, description) : guessIncomeCategory(description),
+        skip: isSkippable(description),
+      };
+    });
+}
+
+const BANK_DISPLAY_NAMES: Record<string, string> = {
+  chase: "Chase",
+  "bofa-cc": "Bank of America (Credit Card)",
+  "bofa-checking": "Bank of America (Checking)",
+  citi: "Citi",
+  amex: "American Express",
+};
+
+function parseCSV(text: string): { bank: string; rows: ImportRow[]; error?: string } {
+  // Strip BOM
+  const cleaned = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+  const lines = cleaned.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  if (lines.length < 2) return { bank: "", rows: [], error: "File appears empty or contains no data rows." };
+
+  const headers = parseCSVLine(lines[0]);
+  const bank = detectBank(headers);
+
+  if (bank === "unknown") {
+    return {
+      bank: "",
+      rows: [],
+      error: "Bank format not recognized. Supported: Chase, Bank of America (Checking & Credit Card), Citi, American Express.",
+    };
+  }
+
+  const dataRows = lines.slice(1).map((l) => parseCSVLine(l));
+  let rows: ImportRow[] = [];
+
+  switch (bank) {
+    case "chase": rows = parseChase(dataRows, headers); break;
+    case "bofa-cc": rows = parseBofACC(dataRows, headers); break;
+    case "bofa-checking": rows = parseBofAChecking(dataRows, headers); break;
+    case "citi": rows = parseCiti(dataRows, headers); break;
+    case "amex": rows = parseAmex(dataRows, headers); break;
+  }
+
+  // Remove zero-amount rows
+  rows = rows.filter((r) => r.amount > 0);
+
+  if (rows.length === 0) {
+    return { bank: BANK_DISPLAY_NAMES[bank] || bank, rows: [], error: "No transactions found in this file." };
+  }
+
+  // Sort newest first
+  rows.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+  return { bank: BANK_DISPLAY_NAMES[bank] || bank, rows };
+}
+
+// ─── Component ────────────────────────────────────────────────────────────────
+
 export function BudgetTracker() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [open, setOpen] = useState(false);
@@ -113,6 +438,15 @@ export function BudgetTracker() {
     amount: "",
     date: today,
   });
+
+  // CSV import state
+  const [csvOpen, setCsvOpen] = useState(false);
+  const [csvStep, setCsvStep] = useState<"upload" | "review">("upload");
+  const [csvRows, setCsvRows] = useState<ImportRow[]>([]);
+  const [csvBank, setCsvBank] = useState("");
+  const [csvError, setCsvError] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const saved = localStorage.getItem("ft-transactions");
@@ -174,6 +508,71 @@ export function BudgetTracker() {
     setTransactions([]);
     localStorage.removeItem("ft-transactions");
   }, []);
+
+  // ── CSV import handlers ──────────────────────────────────────────────────
+
+  const resetCsvDialog = useCallback(() => {
+    setCsvOpen(false);
+    setCsvStep("upload");
+    setCsvRows([]);
+    setCsvBank("");
+    setCsvError(null);
+    setSelectedIds(new Set());
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }, []);
+
+  const handleFile = useCallback((file: File | undefined) => {
+    if (!file) return;
+    setCsvError(null);
+    if (!file.name.toLowerCase().endsWith(".csv")) {
+      setCsvError("Please upload a .csv file.");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const text = (e.target?.result as string) || "";
+        const { bank, rows, error } = parseCSV(text);
+        if (error) { setCsvError(error); return; }
+        setCsvBank(bank);
+        setCsvRows(rows);
+        setSelectedIds(new Set(rows.filter((r) => !r.skip).map((r) => r.id)));
+        setCsvStep("review");
+      } catch {
+        setCsvError("Failed to parse the file. Please try a different export.");
+      }
+    };
+    reader.readAsText(file);
+  }, []);
+
+  const toggleRow = useCallback((id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const updateRowCategory = useCallback((id: string, category: string) => {
+    setCsvRows((prev) => prev.map((r) => (r.id === id ? { ...r, category } : r)));
+  }, []);
+
+  const importSelected = useCallback(() => {
+    const toImport: Transaction[] = csvRows
+      .filter((r) => selectedIds.has(r.id))
+      .map((r) => ({
+        id: crypto.randomUUID(),
+        type: r.type,
+        category: r.category,
+        description: r.description,
+        amount: r.amount,
+        date: r.date,
+      }));
+    if (toImport.length === 0) return;
+    setTransactions((prev) => [...toImport, ...prev]);
+    resetCsvDialog();
+  }, [csvRows, selectedIds, resetCsvDialog]);
 
   const categories = form.type === "income" ? INCOME_CATEGORIES : EXPENSE_CATEGORIES;
 
@@ -381,7 +780,7 @@ export function BudgetTracker() {
       <Card className="bg-gray-900 border-gray-800">
         <CardHeader className="flex flex-row items-center justify-between">
           <CardTitle className="text-white text-base">Transactions</CardTitle>
-          <div className="flex gap-2">
+          <div className="flex gap-2 items-center">
             {transactions.length > 0 && (
               <Button
                 variant="ghost"
@@ -392,6 +791,18 @@ export function BudgetTracker() {
                 Clear All
               </Button>
             )}
+
+            {/* Import CSV button */}
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setCsvOpen(true)}
+              className="border-gray-700 text-gray-300 hover:text-white hover:bg-gray-800 text-xs"
+            >
+              <Upload className="h-3.5 w-3.5 mr-1" /> Import
+            </Button>
+
+            {/* Add Transaction button */}
             <Dialog open={open} onOpenChange={setOpen}>
               <DialogTrigger asChild>
                 <Button size="sm" className="bg-emerald-600 hover:bg-emerald-700 text-white">
@@ -504,7 +915,7 @@ export function BudgetTracker() {
           <ScrollArea className="h-72">
             {transactions.length === 0 ? (
               <div className="p-8 text-center text-gray-500 text-sm">
-                No transactions yet. Add one to get started!
+                No transactions yet. Add one or import a statement to get started!
               </div>
             ) : (
               <div>
@@ -558,6 +969,186 @@ export function BudgetTracker() {
           </ScrollArea>
         </CardContent>
       </Card>
+
+      {/* ── CSV Import Dialog ─────────────────────────────────────────────── */}
+      <Dialog open={csvOpen} onOpenChange={(open) => { if (!open) resetCsvDialog(); }}>
+        <DialogContent className="bg-gray-900 border-gray-700 text-white sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="text-white flex items-center gap-2">
+              {csvStep === "upload" ? (
+                "Import Bank Statement"
+              ) : (
+                <>
+                  Review Transactions
+                  <span className="text-blue-400 text-sm font-normal">— {csvBank}</span>
+                </>
+              )}
+            </DialogTitle>
+          </DialogHeader>
+
+          {csvStep === "upload" ? (
+            /* ── Step 1: Upload ── */
+            <div className="space-y-4 pt-2">
+              <div
+                className="border-2 border-dashed border-gray-700 rounded-xl p-10 text-center cursor-pointer hover:border-blue-500 hover:bg-blue-500/5 transition-colors group"
+                onClick={() => fileInputRef.current?.click()}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => { e.preventDefault(); handleFile(e.dataTransfer.files[0]); }}
+              >
+                <Upload className="h-10 w-10 text-gray-500 group-hover:text-blue-400 mx-auto mb-3 transition-colors" />
+                <p className="text-white font-medium mb-1">Drop your CSV file here</p>
+                <p className="text-gray-400 text-sm">or click to browse</p>
+                <div className="flex gap-2 justify-center mt-4 flex-wrap">
+                  {["Chase", "Bank of America", "Citi", "American Express"].map((b) => (
+                    <span key={b} className="bg-gray-800 text-gray-400 text-xs px-2.5 py-1 rounded-full">{b}</span>
+                  ))}
+                </div>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".csv"
+                  className="hidden"
+                  onChange={(e) => handleFile(e.target.files?.[0])}
+                />
+              </div>
+
+              {csvError && (
+                <div className="flex items-center gap-2 text-red-400 text-sm bg-red-500/10 rounded-lg p-3">
+                  <AlertCircle className="h-4 w-4 flex-shrink-0" />
+                  {csvError}
+                </div>
+              )}
+
+              <div className="bg-gray-800/60 rounded-lg p-4 text-xs text-gray-400 space-y-1.5">
+                <p className="font-medium text-gray-300 mb-2">How to export your CSV:</p>
+                <p><span className="text-white">Chase:</span> Sign in → Account Activity → Download → CSV</p>
+                <p><span className="text-white">Bank of America:</span> Online Banking → Download → Microsoft Excel format (.csv)</p>
+                <p><span className="text-white">Citi:</span> Account Activity → Download → CSV</p>
+                <p><span className="text-white">American Express:</span> Statements → Download → CSV</p>
+              </div>
+            </div>
+          ) : (
+            /* ── Step 2: Review ── */
+            <div className="pt-2 space-y-3">
+              {/* Controls row */}
+              <div className="flex items-center justify-between">
+                <div className="flex gap-3 text-xs">
+                  <button
+                    onClick={() => setSelectedIds(new Set(csvRows.map((r) => r.id)))}
+                    className="text-blue-400 hover:text-blue-300 transition-colors"
+                  >
+                    Select all
+                  </button>
+                  <span className="text-gray-700">·</span>
+                  <button
+                    onClick={() => setSelectedIds(new Set())}
+                    className="text-gray-400 hover:text-gray-300 transition-colors"
+                  >
+                    Deselect all
+                  </button>
+                  <span className="text-gray-700">·</span>
+                  <button
+                    onClick={() => setSelectedIds(new Set(csvRows.filter((r) => !r.skip).map((r) => r.id)))}
+                    className="text-gray-400 hover:text-gray-300 transition-colors"
+                  >
+                    Exclude payments
+                  </button>
+                </div>
+                <span className="text-gray-500 text-xs">
+                  {selectedIds.size} of {csvRows.length} selected
+                </span>
+              </div>
+
+              {/* Transaction rows */}
+              <ScrollArea className="h-72 border border-gray-800 rounded-lg">
+                <div className="divide-y divide-gray-800">
+                  {csvRows.map((row) => {
+                    const selected = selectedIds.has(row.id);
+                    return (
+                      <div
+                        key={row.id}
+                        className={cn(
+                          "flex items-center gap-3 px-3 py-2.5 cursor-pointer hover:bg-gray-800/40 transition-colors",
+                          !selected && "opacity-40"
+                        )}
+                        onClick={() => toggleRow(row.id)}
+                      >
+                        {/* Custom checkbox */}
+                        <div
+                          className={cn(
+                            "w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 transition-colors",
+                            selected ? "bg-blue-600 border-blue-600" : "border-gray-600"
+                          )}
+                        >
+                          {selected && <Check className="h-3 w-3 text-white" />}
+                        </div>
+
+                        <div className="flex-1 min-w-0" onClick={(e) => e.stopPropagation()}>
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-white text-sm truncate">{row.description}</span>
+                            <span
+                              className={cn(
+                                "font-semibold text-sm flex-shrink-0",
+                                row.type === "income" ? "text-emerald-400" : "text-red-400"
+                              )}
+                            >
+                              {row.type === "income" ? "+" : "−"}$
+                              {row.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2 mt-1">
+                            <span className="text-gray-500 text-xs flex-shrink-0">{row.date}</span>
+                            <div onClick={(e) => e.stopPropagation()}>
+                              <Select
+                                value={row.category}
+                                onValueChange={(v) => updateRowCategory(row.id, v)}
+                              >
+                                <SelectTrigger className="h-6 text-xs bg-gray-800 border-gray-700 text-gray-300 w-40 px-2">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent className="bg-gray-800 border-gray-700">
+                                  {(row.type === "income" ? INCOME_CATEGORIES : EXPENSE_CATEGORIES).map((c) => (
+                                    <SelectItem key={c} value={c} className="text-white text-xs focus:bg-gray-700">
+                                      {c}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            </div>
+                            {row.skip && (
+                              <span className="text-xs bg-yellow-500/20 text-yellow-400 px-1.5 py-0.5 rounded flex-shrink-0">
+                                payment
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </ScrollArea>
+
+              {/* Footer buttons */}
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  onClick={() => setCsvStep("upload")}
+                  className="border-gray-700 text-gray-300 hover:bg-gray-800"
+                >
+                  ← Back
+                </Button>
+                <Button
+                  onClick={importSelected}
+                  className="flex-1 bg-blue-600 hover:bg-blue-700"
+                  disabled={selectedIds.size === 0}
+                >
+                  Import {selectedIds.size} Transaction{selectedIds.size !== 1 ? "s" : ""}
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
