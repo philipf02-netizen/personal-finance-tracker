@@ -85,6 +85,7 @@ interface ImportRow {
   amount: number;
   type: "income" | "expense";
   category: string;
+  entity?: EntityType;  // stamped in handleFile after parse
   skip: boolean; // auto-flagged payments/transfers
 }
 
@@ -613,8 +614,9 @@ export function BudgetTracker() {
         const { bank, rows, error } = parseCSV(text);
         if (error) { setCsvError(error); return; }
         setCsvBank(bank);
-        setCsvRows(rows);
-        setSelectedIds(new Set(rows.filter((r) => !r.skip).map((r) => r.id)));
+        const stamped = rows.map((r) => ({ ...r, entity: activeEntity }));
+        setCsvRows(stamped);
+        setSelectedIds(new Set(stamped.filter((r) => !r.skip).map((r) => r.id)));
         setCsvStep("review");
       } catch {
         setCsvError("Failed to parse the file. Please try a different export.");
@@ -636,6 +638,14 @@ export function BudgetTracker() {
     setCsvRows((prev) => prev.map((r) => (r.id === id ? { ...r, category } : r)));
   }, []);
 
+  const updateRowEntity = useCallback((id: string, entity: EntityType) => {
+    setCsvRows((prev) => prev.map((r) => (r.id === id ? { ...r, entity } : r)));
+  }, []);
+
+  const assignAllEntity = useCallback((entity: EntityType) => {
+    setCsvRows((prev) => prev.map((r) => ({ ...r, entity })));
+  }, []);
+
   const importSelected = useCallback(() => {
     const toImport: Transaction[] = csvRows
       .filter((r) => selectedIds.has(r.id))
@@ -646,7 +656,7 @@ export function BudgetTracker() {
         description: r.description,
         amount: r.amount,
         date: r.date,
-        entity: activeEntity,
+        entity: r.entity ?? activeEntity,
       }));
     if (toImport.length === 0) return;
     setTransactions((prev) => [...toImport, ...prev]);
@@ -1173,6 +1183,25 @@ export function BudgetTracker() {
                 </span>
               </div>
 
+              {/* Bulk entity assign */}
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-xs text-gray-400 flex-shrink-0">Assign all to:</span>
+                {ENTITIES.map((e) => (
+                  <button
+                    key={e.id}
+                    onClick={() => assignAllEntity(e.id)}
+                    className={cn(
+                      "text-xs px-2.5 py-1 rounded-full border transition-colors",
+                      e.id === "phc"      && "border-blue-700   text-blue-400   hover:bg-blue-600/20",
+                      e.id === "pfi"      && "border-purple-700 text-purple-400 hover:bg-purple-600/20",
+                      e.id === "personal" && "border-emerald-700 text-emerald-400 hover:bg-emerald-600/20"
+                    )}
+                  >
+                    {e.short}
+                  </button>
+                ))}
+              </div>
+
               {/* Transaction rows */}
               <ScrollArea className="h-72 border border-gray-800 rounded-lg">
                 <div className="divide-y divide-gray-800">
@@ -1228,6 +1257,23 @@ export function BudgetTracker() {
                                   ))}
                                 </SelectContent>
                               </Select>
+                            </div>
+                            {/* Per-row entity pills */}
+                            <div className="flex gap-1 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
+                              {ENTITIES.map((e) => (
+                                <button
+                                  key={e.id}
+                                  onClick={() => updateRowEntity(row.id, e.id)}
+                                  className={cn(
+                                    "text-xs px-2 py-0.5 rounded-full border transition-all",
+                                    row.entity === e.id
+                                      ? cn(e.activeBg, "text-white border-transparent")
+                                      : "border-gray-700 text-gray-500 hover:border-gray-500 hover:text-gray-300"
+                                  )}
+                                >
+                                  {e.short}
+                                </button>
+                              ))}
                             </div>
                             {row.skip && (
                               <span className="text-xs bg-yellow-500/20 text-yellow-400 px-1.5 py-0.5 rounded flex-shrink-0">
