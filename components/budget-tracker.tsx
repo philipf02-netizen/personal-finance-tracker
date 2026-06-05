@@ -38,6 +38,7 @@ import {
 import {
   Plus,
   Trash,
+  Pencil,
   DollarSign,
   Activity,
   ArrowUp,
@@ -49,6 +50,22 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
+// ─── Entities ─────────────────────────────────────────────────────────────────
+
+type EntityType = "phc" | "pfi" | "personal";
+
+const ENTITIES: Array<{
+  id: EntityType;
+  label: string;
+  short: string;
+  activeBg: string;
+  accentText: string;
+}> = [
+  { id: "phc",      label: "Performance Hearing Center", short: "PHC",          activeBg: "bg-blue-600",    accentText: "text-blue-400" },
+  { id: "pfi",      label: "Philip Fernandes Insurance", short: "PF Insurance", activeBg: "bg-purple-600",  accentText: "text-purple-400" },
+  { id: "personal", label: "Personal Household",         short: "Personal",     activeBg: "bg-emerald-600", accentText: "text-emerald-400" },
+];
+
 // ─── Interfaces ──────────────────────────────────────────────────────────────
 
 interface Transaction {
@@ -58,6 +75,7 @@ interface Transaction {
   description: string;
   amount: number;
   date: string;
+  entity: EntityType;
 }
 
 interface ImportRow {
@@ -110,14 +128,14 @@ const CAT_COLORS = [
 const today = new Date().toISOString().split("T")[0];
 
 const DEFAULT_TRANSACTIONS: Transaction[] = [
-  { id: "1", type: "income", category: "Salary", description: "Monthly salary", amount: 5000, date: today },
-  { id: "2", type: "expense", category: "Housing", description: "Rent", amount: 1500, date: today },
-  { id: "3", type: "expense", category: "Food & Dining", description: "Groceries", amount: 380, date: today },
-  { id: "4", type: "expense", category: "Transportation", description: "Car payment + gas", amount: 420, date: today },
-  { id: "5", type: "expense", category: "Entertainment", description: "Streaming + dining out", amount: 120, date: today },
-  { id: "6", type: "expense", category: "Utilities", description: "Electric & internet", amount: 160, date: today },
-  { id: "7", type: "expense", category: "Healthcare", description: "Gym membership", amount: 50, date: today },
-  { id: "8", type: "income", category: "Freelance", description: "Side project", amount: 800, date: today },
+  { id: "1", type: "income",  category: "Salary",         description: "Monthly salary",       amount: 5000, date: today, entity: "personal" },
+  { id: "2", type: "expense", category: "Housing",        description: "Rent",                 amount: 1500, date: today, entity: "personal" },
+  { id: "3", type: "expense", category: "Food & Dining",  description: "Groceries",            amount: 380,  date: today, entity: "personal" },
+  { id: "4", type: "expense", category: "Transportation", description: "Car payment + gas",    amount: 420,  date: today, entity: "personal" },
+  { id: "5", type: "expense", category: "Entertainment",  description: "Streaming + dining",   amount: 120,  date: today, entity: "personal" },
+  { id: "6", type: "expense", category: "Utilities",      description: "Electric & internet",  amount: 160,  date: today, entity: "personal" },
+  { id: "7", type: "expense", category: "Healthcare",     description: "Gym membership",       amount: 50,   date: today, entity: "personal" },
+  { id: "8", type: "income",  category: "Freelance",      description: "Side project",         amount: 800,  date: today, entity: "personal" },
 ];
 
 // ─── CSV Parsing Utilities ────────────────────────────────────────────────────
@@ -468,34 +486,42 @@ export function BudgetTracker() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // ── Entity & edit state ────────────────────────────────────────────────
+  const [activeEntity, setActiveEntity] = useState<EntityType>("personal");
+  const [editingId, setEditingId] = useState<string | null>(null);
+
   useEffect(() => {
     const saved = localStorage.getItem("ft-transactions");
     setTransactions(saved ? JSON.parse(saved) : DEFAULT_TRANSACTIONS);
   }, []);
 
   useEffect(() => {
-    if (transactions.length > 0) {
-      localStorage.setItem("ft-transactions", JSON.stringify(transactions));
-    }
+    localStorage.setItem("ft-transactions", JSON.stringify(transactions));
   }, [transactions]);
 
+  // ── Filter transactions to active entity (existing data defaults to "personal") ──
+  const filteredTransactions = useMemo(
+    () => transactions.filter((t) => (t.entity ?? "personal") === activeEntity),
+    [transactions, activeEntity]
+  );
+
   const summary = useMemo(() => {
-    const income = transactions.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0);
-    const expenses = transactions.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0);
+    const income = filteredTransactions.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0);
+    const expenses = filteredTransactions.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0);
     const savings = income - expenses;
     const savingsRate = income > 0 ? (savings / income) * 100 : 0;
     return { income, expenses, savings, savingsRate };
-  }, [transactions]);
+  }, [filteredTransactions]);
 
   const expensesByCategory = useMemo(() => {
     const map: Record<string, number> = {};
-    transactions.filter((t) => t.type === "expense").forEach((t) => {
+    filteredTransactions.filter((t) => t.type === "expense").forEach((t) => {
       map[t.category] = (map[t.category] || 0) + t.amount;
     });
     return Object.entries(map)
       .map(([name, value]) => ({ name, value }))
       .sort((a, b) => b.value - a.value);
-  }, [transactions]);
+  }, [filteredTransactions]);
 
   const monthlyComparison = useMemo(() => {
     return [
@@ -507,27 +533,59 @@ export function BudgetTracker() {
 
   const addTransaction = useCallback(() => {
     if (!form.category || !form.description || !form.amount || !form.date) return;
-    const t: Transaction = {
-      id: crypto.randomUUID(),
-      type: form.type,
-      category: form.category,
-      description: form.description,
-      amount: parseFloat(form.amount),
-      date: form.date,
-    };
-    setTransactions((prev) => [t, ...prev]);
+    if (editingId) {
+      // ── Edit existing transaction ──────────────────────────────────────
+      setTransactions((prev) =>
+        prev.map((t) =>
+          t.id === editingId
+            ? {
+                ...t,
+                type: form.type,
+                category: form.category,
+                description: form.description,
+                amount: parseFloat(form.amount),
+                date: form.date,
+              }
+            : t
+        )
+      );
+      setEditingId(null);
+    } else {
+      // ── Add new transaction ────────────────────────────────────────────
+      const t: Transaction = {
+        id: crypto.randomUUID(),
+        type: form.type,
+        category: form.category,
+        description: form.description,
+        amount: parseFloat(form.amount),
+        date: form.date,
+        entity: activeEntity,
+      };
+      setTransactions((prev) => [t, ...prev]);
+    }
     setForm({ type: "expense", category: "", description: "", amount: "", date: today });
     setOpen(false);
-  }, [form]);
+  }, [form, editingId, activeEntity]);
 
   const deleteTransaction = useCallback((id: string) => {
     setTransactions((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
-  const clearAll = useCallback(() => {
-    setTransactions([]);
-    localStorage.removeItem("ft-transactions");
+  const startEdit = useCallback((t: Transaction) => {
+    setForm({
+      type: t.type,
+      category: t.category,
+      description: t.description,
+      amount: t.amount.toString(),
+      date: t.date,
+    });
+    setEditingId(t.id);
+    setOpen(true);
   }, []);
+
+  const clearAll = useCallback(() => {
+    setTransactions((prev) => prev.filter((t) => (t.entity ?? "personal") !== activeEntity));
+  }, [activeEntity]);
 
   // ── CSV import handlers ──────────────────────────────────────────────────
 
@@ -588,16 +646,38 @@ export function BudgetTracker() {
         description: r.description,
         amount: r.amount,
         date: r.date,
+        entity: activeEntity,
       }));
     if (toImport.length === 0) return;
     setTransactions((prev) => [...toImport, ...prev]);
     resetCsvDialog();
-  }, [csvRows, selectedIds, resetCsvDialog]);
+  }, [csvRows, selectedIds, resetCsvDialog, activeEntity]);
 
   const categories = form.type === "income" ? INCOME_CATEGORIES : EXPENSE_CATEGORIES;
 
+  const activeEntityMeta = ENTITIES.find((e) => e.id === activeEntity)!;
+
   return (
     <div className="space-y-6">
+      {/* ── Entity Switcher ─────────────────────────────────────────────── */}
+      <div className="flex bg-gray-900 border border-gray-800 rounded-xl p-1 gap-1">
+        {ENTITIES.map((e) => (
+          <button
+            key={e.id}
+            onClick={() => setActiveEntity(e.id)}
+            className={cn(
+              "flex-1 text-sm font-medium py-2.5 px-3 rounded-lg transition-all duration-200",
+              activeEntity === e.id
+                ? `${e.activeBg} text-white shadow-sm`
+                : "text-gray-400 hover:text-white hover:bg-gray-800"
+            )}
+          >
+            <span className="hidden md:inline">{e.label}</span>
+            <span className="md:hidden">{e.short}</span>
+          </button>
+        ))}
+      </div>
+
       {/* Summary Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
         {[
@@ -799,7 +879,7 @@ export function BudgetTracker() {
       {/* Transactions */}
       <Card className="bg-gray-900 border-gray-800">
         <CardHeader className="flex flex-row items-center justify-between">
-          <CardTitle className="text-white text-base">Transactions</CardTitle>
+<CardTitle className="text-white text-base flex items-center gap-2">Transactions<span className={cn("text-xs font-normal px-2 py-0.5 rounded-full", activeEntityMeta.activeBg + "/20", activeEntityMeta.accentText)}>{activeEntityMeta.short}</span></CardTitle>
           <div className="flex gap-2 items-center">
             {transactions.length > 0 && (
               <Button
@@ -823,7 +903,13 @@ export function BudgetTracker() {
             </Button>
 
             {/* Add Transaction button */}
-            <Dialog open={open} onOpenChange={setOpen}>
+            <Dialog open={open} onOpenChange={(o) => {
+                setOpen(o);
+                if (!o) {
+                  setEditingId(null);
+                  setForm({ type: "expense", category: "", description: "", amount: "", date: today });
+                }
+              }}>
               <DialogTrigger asChild>
                 <Button size="sm" className="bg-emerald-600 hover:bg-emerald-700 text-white">
                   <Plus className="h-4 w-4 mr-1" /> Add
@@ -831,7 +917,7 @@ export function BudgetTracker() {
               </DialogTrigger>
               <DialogContent className="bg-gray-900 border-gray-700 text-white sm:max-w-md">
                 <DialogHeader>
-                  <DialogTitle className="text-white">Add Transaction</DialogTitle>
+                  <DialogTitle className="text-white">{editingId ? "Edit Transaction" : "Add Transaction"}</DialogTitle>
                 </DialogHeader>
                 <div className="space-y-4 pt-2">
                   <div className="grid grid-cols-2 gap-2">
@@ -924,7 +1010,7 @@ export function BudgetTracker() {
                     )}
                     disabled={!form.category || !form.description || !form.amount}
                   >
-                    Add {form.type === "income" ? "Income" : "Expense"}
+{editingId ? "Save Changes" : `Add ${form.type === "income" ? "Income" : "Expense"}`}
                   </Button>
                 </div>
               </DialogContent>
@@ -939,7 +1025,7 @@ export function BudgetTracker() {
               </div>
             ) : (
               <div>
-                {transactions.map((t, idx) => (
+                {filteredTransactions.map((t, idx) => (
                   <div key={t.id}>
                     {idx > 0 && <Separator className="bg-gray-800" />}
                     <div className="flex items-center justify-between px-4 py-3 hover:bg-gray-800/40 transition-colors">
@@ -975,6 +1061,14 @@ export function BudgetTracker() {
                         <Button
                           variant="ghost"
                           size="sm"
+                          onClick={() => startEdit(t)}
+                          className="text-gray-600 hover:text-blue-400 hover:bg-transparent p-1 h-auto"
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
                           onClick={() => deleteTransaction(t.id)}
                           className="text-gray-600 hover:text-red-400 hover:bg-transparent p-1 h-auto"
                         >
@@ -996,7 +1090,7 @@ export function BudgetTracker() {
           <DialogHeader>
             <DialogTitle className="text-white flex items-center gap-2">
               {csvStep === "upload" ? (
-                "Import Bank Statement"
+    "Import Bank Statement — " + activeEntityMeta.short
               ) : (
                 <>
                   Review Transactions
