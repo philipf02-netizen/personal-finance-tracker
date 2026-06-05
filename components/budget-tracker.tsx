@@ -146,13 +146,17 @@ type BankType = "chase" | "bofa-cc" | "bofa-checking" | "citi" | "amex" | "unkno
 
 function detectBank(headers: string[]): BankType {
   const h = headers.map((s) => s.toLowerCase().replace(/['"]/g, "").trim());
-  const joined = h.join("|");
   if (h.some((v) => v === "transaction date") && h.some((v) => v === "post date")) return "chase";
-  if (h.some((v) => v === "posted date") && h.some((v) => v.includes("reference number"))) return "bofa-cc";
+  // BofA CC: "Posted Date" (or "Posting Date") + "Reference Number"
+  if (
+    h.some((v) => v === "posted date" || v === "posting date") &&
+    h.some((v) => v.includes("reference number"))
+  ) return "bofa-cc";
+  // BofA Checking: has "Running Bal." column
   if (h.some((v) => v.includes("running bal"))) return "bofa-checking";
   if (h.some((v) => v === "debit") && h.some((v) => v === "credit") && h.some((v) => v === "status")) return "citi";
   if (h.some((v) => v.includes("extended details")) || h.some((v) => v.includes("appears on your statement"))) return "amex";
-  // Fallback: generic bank CSV (date, description, amount)
+  // Fallback: generic CSV with date + amount (treat as BofA Checking layout)
   if (h.some((v) => v === "date") && h.some((v) => v.includes("amount"))) return "bofa-checking";
   return "unknown";
 }
@@ -277,19 +281,21 @@ function parseChase(rows: string[][], headers: string[]): ImportRow[] {
 function parseBofACC(rows: string[][], headers: string[]): ImportRow[] {
   const h = headers.map((s) => s.toLowerCase().trim());
   const idx = {
-    date: h.findIndex((v) => v.includes("posted date")),
-    payee: h.findIndex((v) => v === "payee"),
+    // Accept "Posted Date" or "Posting Date"
+    date: h.findIndex((v) => v.includes("posted date") || v.includes("posting date")),
+    // Accept "Payee", "Description", or "Merchant Name"
+    payee: h.findIndex((v) => v === "payee" || v === "description" || v.includes("merchant")),
     amount: h.findIndex((v) => v === "amount"),
   };
   return rows
-    .filter((r) => r.length > 2 && r[idx.amount])
+    .filter((r) => r.length > 2 && idx.amount >= 0 && r[idx.amount])
     .map((row) => {
       const rawAmount = parseFloat((row[idx.amount] || "0").replace(/[$,\s]/g, ""));
-      const description = (row[idx.payee] || "").trim();
+      const description = (idx.payee >= 0 ? row[idx.payee] : "").trim();
       const isExpense = rawAmount > 0; // BofA CC: positive = charge
       return {
         id: crypto.randomUUID(),
-        date: formatDate((row[idx.date] || "").trim()),
+        date: formatDate((idx.date >= 0 ? row[idx.date] : "").trim()),
         description,
         amount: Math.abs(rawAmount),
         type: isExpense ? "expense" : "income",
@@ -301,18 +307,18 @@ function parseBofACC(rows: string[][], headers: string[]): ImportRow[] {
 
 function parseBofAChecking(rows: string[][], headers: string[]): ImportRow[] {
   const h = headers.map((s) => s.toLowerCase().trim());
-  const dateIdx = h.findIndex((v) => v === "date");
-  const descIdx = h.findIndex((v) => v === "description");
-  const amtIdx = h.findIndex((v) => v === "amount");
+  const dateIdx = h.findIndex((v) => v === "date" || v.includes("trans date") || v.includes("transaction date"));
+  const descIdx = h.findIndex((v) => v === "description" || v === "payee" || v.includes("merchant"));
+  const amtIdx  = h.findIndex((v) => v === "amount" || v.includes("debit amount") || v.includes("credit amount"));
   return rows
-    .filter((r) => r.length > 2 && r[amtIdx])
+    .filter((r) => r.length > 2 && amtIdx >= 0 && r[amtIdx])
     .map((row) => {
       const rawAmount = parseFloat((row[amtIdx] || "0").replace(/[$,\s]/g, ""));
-      const description = (row[descIdx] || "").trim();
+      const description = (descIdx >= 0 ? row[descIdx] : "").trim();
       const isExpense = rawAmount < 0; // BofA checking: negative = debit
       return {
         id: crypto.randomUUID(),
-        date: formatDate((row[dateIdx] || "").trim()),
+        date: formatDate((dateIdx >= 0 ? row[dateIdx] : "").trim()),
         description,
         amount: Math.abs(rawAmount),
         type: isExpense ? "expense" : "income",
@@ -391,8 +397,22 @@ function parseCSV(text: string): { bank: string; rows: ImportRow[]; error?: stri
   const lines = cleaned.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
   if (lines.length < 2) return { bank: "", rows: [], error: "File appears empty or contains no data rows." };
 
-  const headers = parseCSVLine(lines[0]);
-  const bank = detectBank(headers);
+  // ── Find the real header row ──────────────────────────────────────────────
+  // BofA (and some other banks) prepend metadata lines before the CSV header.
+  // Scan up to the first 10 lines and use the first one that is recognized.
+  let headerLineIdx = 0;
+  let bank: BankType = "unknown";
+  for (let i = 0; i < Math.min(lines.length, 10); i++) {
+    const candidate = parseCSVLine(lines[i]);
+    const detected = detectBank(candidate);
+    if (detected !== "unknown") {
+      headerLineIdx = i;
+      bank = detected;
+      break;
+    }
+  }
+
+  const headers = parseCSVLine(lines[headerLineIdx]);
 
   if (bank === "unknown") {
     return {
@@ -402,7 +422,7 @@ function parseCSV(text: string): { bank: string; rows: ImportRow[]; error?: stri
     };
   }
 
-  const dataRows = lines.slice(1).map((l) => parseCSVLine(l));
+  const dataRows = lines.slice(headerLineIdx + 1).map((l) => parseCSVLine(l));
   let rows: ImportRow[] = [];
 
   switch (bank) {
