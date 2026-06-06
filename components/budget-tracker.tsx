@@ -1129,45 +1129,54 @@ export function BudgetTracker() {
                     )}
                   </div>
 
-                  {/* ── Sub-category selector (shown when category has sub-cats) ── */}
+                  {/* ── Sub-category (visible whenever a category is selected) ── */}
                   {form.category && (
                     <div>
-                      <Label className="text-gray-300 text-sm">Sub-category <span className="text-gray-500 font-normal">(optional)</span></Label>
-                      <Select
-                        value={addingSubcategory ? "" : (form.subcategory || "__none__")}
-                        onValueChange={(v) => {
-                          if (v === "__add_new_sub__") {
-                            setAddingSubcategory(true);
-                            setNewSubcatInput("");
-                          } else if (v === "__none__") {
-                            setForm((f) => ({ ...f, subcategory: "" }));
-                            setAddingSubcategory(false);
-                          } else {
-                            setForm((f) => ({ ...f, subcategory: v }));
-                            setAddingSubcategory(false);
-                          }
-                        }}
-                      >
-                        <SelectTrigger className="bg-gray-800 border-gray-700 text-white mt-1">
-                          <SelectValue placeholder={addingSubcategory ? "Adding sub-category…" : "Select sub-category"} />
-                        </SelectTrigger>
-                        <SelectContent className="bg-gray-800 border-gray-700">
-                          <SelectItem value="__none__" className="text-gray-400 focus:bg-gray-700">— None —</SelectItem>
-                          {getSubcategories(form.type, form.category).length > 0 && (
-                            <>
-                              <Separator className="my-1 bg-gray-700" />
-                              {getSubcategories(form.type, form.category).map((s) => (
-                                <SelectItem key={s} value={s} className="text-white focus:bg-gray-700">{s}</SelectItem>
-                              ))}
-                            </>
-                          )}
-                          <Separator className="my-1 bg-gray-700" />
-                          <SelectItem value="__add_new_sub__" className="text-blue-400 focus:bg-gray-700 focus:text-blue-300">+ New sub-category…</SelectItem>
-                        </SelectContent>
-                      </Select>
+                      <div className="flex items-center justify-between mt-0">
+                        <Label className="text-gray-300 text-sm">
+                          Sub-category <span className="text-gray-500 font-normal">(optional)</span>
+                        </Label>
+                        {/* Always-visible add button — avoids Radix Select onValueChange quirks */}
+                        {!addingSubcategory && (
+                          <button
+                            type="button"
+                            onClick={() => { setAddingSubcategory(true); setNewSubcatInput(""); }}
+                            className="text-xs text-blue-400 hover:text-blue-300 transition-colors"
+                          >
+                            + New
+                          </button>
+                        )}
+                      </div>
 
+                      {/* Pick from existing sub-categories */}
+                      {!addingSubcategory && getSubcategories(form.type, form.category).length > 0 && (
+                        <Select
+                          value={form.subcategory || "__none__"}
+                          onValueChange={(v) =>
+                            setForm((f) => ({ ...f, subcategory: v === "__none__" ? "" : v }))
+                          }
+                        >
+                          <SelectTrigger className="bg-gray-800 border-gray-700 text-white mt-1">
+                            <SelectValue placeholder="Select sub-category" />
+                          </SelectTrigger>
+                          <SelectContent className="bg-gray-800 border-gray-700">
+                            <SelectItem value="__none__" className="text-gray-400 focus:bg-gray-700">— None —</SelectItem>
+                            <Separator className="my-1 bg-gray-700" />
+                            {getSubcategories(form.type, form.category).map((s) => (
+                              <SelectItem key={s} value={s} className="text-white focus:bg-gray-700">{s}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      )}
+
+                      {/* No sub-categories yet — show hint */}
+                      {!addingSubcategory && getSubcategories(form.type, form.category).length === 0 && (
+                        <p className="text-xs text-gray-500 mt-1">No sub-categories yet — click <span className="text-blue-400">+ New</span> to add one.</p>
+                      )}
+
+                      {/* Inline new sub-category input */}
                       {addingSubcategory && (
-                        <div className="flex gap-2 mt-2">
+                        <div className="flex gap-2 mt-1">
                           <Input
                             value={newSubcatInput}
                             onChange={(e) => setNewSubcatInput(e.target.value)}
@@ -1179,13 +1188,20 @@ export function BudgetTracker() {
                             autoFocus
                             className="bg-gray-800 border-gray-700 text-white placeholder:text-gray-500 h-8 text-sm"
                           />
-                          <Button size="sm" onClick={addCustomSubcategory} disabled={!newSubcatInput.trim()}
-                            className="h-8 w-8 p-0 bg-emerald-600 hover:bg-emerald-700 flex-shrink-0">
+                          <Button
+                            size="sm"
+                            onClick={addCustomSubcategory}
+                            disabled={!newSubcatInput.trim()}
+                            className="h-8 w-8 p-0 bg-emerald-600 hover:bg-emerald-700 flex-shrink-0"
+                          >
                             <Check className="h-4 w-4" />
                           </Button>
-                          <Button size="sm" variant="ghost"
+                          <Button
+                            size="sm"
+                            variant="ghost"
                             onClick={() => { setAddingSubcategory(false); setNewSubcatInput(""); }}
-                            className="h-8 w-8 p-0 text-gray-400 hover:text-white flex-shrink-0">
+                            className="h-8 w-8 p-0 text-gray-400 hover:text-white flex-shrink-0"
+                          >
                             <X className="h-4 w-4" />
                           </Button>
                         </div>
