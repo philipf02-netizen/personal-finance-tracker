@@ -506,7 +506,7 @@ async function parsePDF(
         const x = item.transform[4];
         let found = false;
         for (const g of yGroups) {
-          if (Math.abs(g.y - y) <= 2) {
+          if (Math.abs(g.y - y) <= 5) {
             g.items.push({ str, x });
             found = true;
             break;
@@ -519,7 +519,7 @@ async function parsePDF(
       for (const { items } of yGroups) {
         // Sort items left-to-right within the row
         items.sort((a, b) => a.x - b.x);
-        const line = items.map((i) => i.str).join(" ").replace(/\s+/g, " ").trim();
+        const line = items.map((i) => i.str).join(" ").replace(/\s+/g, " ").replace(/- (\d)/g, "-$1").trim();
         if (line) lines.push(line);
       }
     }
