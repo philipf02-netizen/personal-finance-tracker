@@ -60,6 +60,7 @@ import { cn } from "@/lib/utils";
 // ─── Entities ─────────────────────────────────────────────────────────────────
 
 type EntityType = "phc" | "pfi" | "personal";
+type ActiveView  = EntityType | "all";
 
 const ENTITIES: Array<{
   id: EntityType;
@@ -555,7 +556,9 @@ export function BudgetTracker() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // ── Entity & edit state ────────────────────────────────────────────────
-  const [activeEntity, setActiveEntity] = useState<EntityType>("personal");
+  const [activeView,   setActiveView]   = useState<ActiveView>("personal");
+  // activeEntity is the "real" entity for writes — falls back to "personal" when view is "all"
+  const activeEntity: EntityType = activeView === "all" ? "personal" : activeView;
   const [editingId, setEditingId] = useState<string | null>(null);
   const [storageLoaded, setStorageLoaded] = useState(false);
 
@@ -640,7 +643,9 @@ export function BudgetTracker() {
   // ── Filter, search, and sort transactions ──────────────────────────────────
   const filteredTransactions = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    let list = transactions.filter((t) => (t.entity ?? "personal") === activeEntity);
+    let list = activeView === "all"
+      ? transactions
+      : transactions.filter((t) => (t.entity ?? "personal") === activeView);
     if (q) {
       list = list.filter((t) =>
         t.description.toLowerCase().includes(q) ||
@@ -658,7 +663,7 @@ export function BudgetTracker() {
       return sortDir === "asc" ? cmp : -cmp;
     });
     return list;
-  }, [transactions, activeEntity, searchQuery, sortField, sortDir]);
+  }, [transactions, activeView, activeEntity, searchQuery, sortField, sortDir]);
 
   const summary = useMemo(() => {
     const income = filteredTransactions.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0);
@@ -749,8 +754,12 @@ export function BudgetTracker() {
   }, []);
 
   const clearAll = useCallback(() => {
-    setTransactions((prev) => prev.filter((t) => (t.entity ?? "personal") !== activeEntity));
-  }, [activeEntity]);
+    if (activeView === "all") {
+      setTransactions([]);
+    } else {
+      setTransactions((prev) => prev.filter((t) => (t.entity ?? "personal") !== activeView));
+    }
+  }, [activeView]);
 
   // ── Batch-edit helpers ───────────────────────────────────────────────────
 
@@ -941,10 +950,10 @@ export function BudgetTracker() {
         {ENTITIES.map((e) => (
           <button
             key={e.id}
-            onClick={() => { setActiveEntity(e.id); setSelectedTxIds(new Set()); setBatchOpen(false); }}
+            onClick={() => { setActiveView(e.id); setSelectedTxIds(new Set()); setBatchOpen(false); }}
             className={cn(
               "flex-1 text-sm font-medium py-2.5 px-3 rounded-lg transition-all duration-200",
-              activeEntity === e.id
+              activeView === e.id
                 ? `${e.activeBg} text-white shadow-sm`
                 : "text-gray-400 hover:text-white hover:bg-gray-800"
             )}
@@ -953,7 +962,102 @@ export function BudgetTracker() {
             <span className="md:hidden">{e.short}</span>
           </button>
         ))}
+        <button
+          onClick={() => { setActiveView("all"); setSelectedTxIds(new Set()); setBatchOpen(false); }}
+          className={cn(
+            "flex-1 text-sm font-medium py-2.5 px-3 rounded-lg transition-all duration-200",
+            activeView === "all"
+              ? "bg-gray-600 text-white shadow-sm"
+              : "text-gray-400 hover:text-white hover:bg-gray-800"
+          )}
+        >
+          <span className="hidden md:inline">All Budgets</span>
+          <span className="md:hidden">All</span>
+        </button>
       </div>
+
+      {/* ── All-budgets combined summary ──────────────────────────────────── */}
+      {activeView === "all" && (() => {
+        const allTotals = ENTITIES.map((e) => {
+          const etxs = transactions.filter((t) => (t.entity ?? "personal") === e.id);
+          const inc  = etxs.filter((t) => t.type === "income" ).reduce((s, t) => s + t.amount, 0);
+          const exp  = etxs.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0);
+          return { ...e, income: inc, expenses: exp, net: inc - exp };
+        });
+        const grandIncome   = allTotals.reduce((s, e) => s + e.income,   0);
+        const grandExpenses = allTotals.reduce((s, e) => s + e.expenses, 0);
+        const grandNet      = grandIncome - grandExpenses;
+        return (
+          <div className="space-y-3">
+            {/* Grand total cards */}
+            <div className="grid grid-cols-3 gap-3">
+              <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
+                <p className="text-xs text-gray-500 mb-1">Total Income</p>
+                <p className="text-xl font-bold text-emerald-400">${grandIncome.toLocaleString(undefined, {minimumFractionDigits:2,maximumFractionDigits:2})}</p>
+                <p className="text-xs text-gray-600 mt-0.5">all entities</p>
+              </div>
+              <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
+                <p className="text-xs text-gray-500 mb-1">Total Expenses</p>
+                <p className="text-xl font-bold text-red-400">${grandExpenses.toLocaleString(undefined, {minimumFractionDigits:2,maximumFractionDigits:2})}</p>
+                <p className="text-xs text-gray-600 mt-0.5">all entities</p>
+              </div>
+              <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
+                <p className="text-xs text-gray-500 mb-1">Net Savings</p>
+                <p className={cn("text-xl font-bold", grandNet >= 0 ? "text-emerald-400" : "text-red-400")}>
+                  {grandNet >= 0 ? "+" : "−"}${Math.abs(grandNet).toLocaleString(undefined, {minimumFractionDigits:2,maximumFractionDigits:2})}
+                </p>
+                <p className="text-xs text-gray-600 mt-0.5">income − expenses</p>
+              </div>
+            </div>
+
+            {/* Per-entity breakdown table */}
+            <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+              <div className="grid text-xs font-semibold uppercase tracking-wide text-gray-500 bg-gray-950 px-4 py-2.5"
+                   style={{gridTemplateColumns:"1fr 130px 130px 130px"}}>
+                <div>Entity</div>
+                <div className="text-right">Income</div>
+                <div className="text-right">Expenses</div>
+                <div className="text-right">Net</div>
+              </div>
+              {allTotals.map((e, i) => (
+                <div key={e.id}>
+                  {i > 0 && <div className="border-t border-gray-800" />}
+                  <div className="grid items-center px-4 py-3"
+                       style={{gridTemplateColumns:"1fr 130px 130px 130px"}}>
+                    <div className="flex items-center gap-2">
+                      <div className={cn("w-2 h-2 rounded-full", e.activeBg)} />
+                      <span className="text-sm text-white font-medium">{e.label}</span>
+                    </div>
+                    <div className="text-right text-sm text-emerald-400 tabular-nums">
+                      ${e.income.toLocaleString(undefined, {minimumFractionDigits:2,maximumFractionDigits:2})}
+                    </div>
+                    <div className="text-right text-sm text-red-400 tabular-nums">
+                      ${e.expenses.toLocaleString(undefined, {minimumFractionDigits:2,maximumFractionDigits:2})}
+                    </div>
+                    <div className={cn("text-right text-sm tabular-nums font-semibold", e.net >= 0 ? "text-emerald-400" : "text-red-400")}>
+                      {e.net >= 0 ? "+" : "−"}${Math.abs(e.net).toLocaleString(undefined, {minimumFractionDigits:2,maximumFractionDigits:2})}
+                    </div>
+                  </div>
+                </div>
+              ))}
+              {/* Totals row */}
+              <div className="border-t-2 border-gray-700 grid items-center px-4 py-3 bg-gray-800/40"
+                   style={{gridTemplateColumns:"1fr 130px 130px 130px"}}>
+                <div className="text-sm font-bold text-white">Total</div>
+                <div className="text-right text-sm font-bold text-emerald-400 tabular-nums">
+                  ${grandIncome.toLocaleString(undefined, {minimumFractionDigits:2,maximumFractionDigits:2})}
+                </div>
+                <div className="text-right text-sm font-bold text-red-400 tabular-nums">
+                  ${grandExpenses.toLocaleString(undefined, {minimumFractionDigits:2,maximumFractionDigits:2})}
+                </div>
+                <div className={cn("text-right text-sm font-bold tabular-nums", grandNet >= 0 ? "text-emerald-400" : "text-red-400")}>
+                  {grandNet >= 0 ? "+" : "−"}${Math.abs(grandNet).toLocaleString(undefined, {minimumFractionDigits:2,maximumFractionDigits:2})}
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Summary Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
@@ -1159,9 +1263,16 @@ export function BudgetTracker() {
           <div className="flex flex-row items-center justify-between">
             <CardTitle className="text-white text-base flex items-center gap-2">
               Transactions
-              <span className={cn("text-xs font-normal px-2 py-0.5 rounded-full", activeEntityMeta.activeBg + "/20", activeEntityMeta.accentText)}>
-                {activeEntityMeta.short}
-              </span>
+              {activeView !== "all" && (
+                <span className={cn("text-xs font-normal px-2 py-0.5 rounded-full", activeEntityMeta.activeBg + "/20", activeEntityMeta.accentText)}>
+                  {activeEntityMeta.short}
+                </span>
+              )}
+              {activeView === "all" && (
+                <span className="text-xs font-normal px-2 py-0.5 rounded-full bg-gray-700/50 text-gray-400">
+                  All Budgets
+                </span>
+              )}
             </CardTitle>
             <div className="flex gap-2 items-center">
             {transactions.length > 0 && (
