@@ -475,6 +475,130 @@ const BANK_DISPLAY_NAMES: Record<string, string> = {
   amex: "American Express",
 };
 
+
+// ─── PDF Parser ────────────────────────────────────────────────────────────────
+// Uses pdfjs-dist (loaded lazily) to extract text then applies regex heuristics
+// to match common bank statement transaction line formats.
+
+async function parsePDF(
+  buffer: ArrayBuffer
+): Promise<{ bank: string; rows: ImportRow[]; error?: string }> {
+  try {
+    const pdfjsLib = await import("pdfjs-dist");
+    pdfjsLib.GlobalWorkerOptions.workerSrc =
+      `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
+
+    const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
+    const lines: string[] = [];
+
+    for (let p = 1; p <= pdf.numPages; p++) {
+      const page = await pdf.getPage(p);
+      const content = await page.getTextContent();
+      // Group text items by approximate Y position so each visual row is one line
+      const byY: Record<number, string[]> = {};
+      for (const item of content.items as {str:string;transform:number[]}[]) {
+        const y = Math.round(item.transform[5]);
+        if (!byY[y]) byY[y] = [];
+        byY[y].push(item.str);
+      }
+      const ys = Object.keys(byY).map(Number).sort((a, b) => b - a); // top-to-bottom
+      for (const y of ys) {
+        const line = byY[y].join(" ").replace(/\s+/g, " ").trim();
+        if (line) lines.push(line);
+      }
+    }
+
+    // ── Pattern matching ───────────────────────────────────────────────────
+    // Tries several common bank statement transaction line formats:
+    //  1. Chase/BofA/Citi:  MM/DD  Description  Amount
+    //  2. Amex:             MM/DD/YYYY  Description  Amount
+    //  3. Fallback:         any line with a date prefix + currency amount
+
+    const rows: ImportRow[] = [];
+    let detectedBank = "PDF Import";
+
+    // Detect bank from text
+    const fullText = lines.join(" ").toLowerCase();
+    if (fullText.includes("bank of america"))   detectedBank = "Bank of America (PDF)";
+    else if (fullText.includes("chase"))         detectedBank = "Chase (PDF)";
+    else if (fullText.includes("american express") || fullText.includes("amex")) detectedBank = "American Express (PDF)";
+    else if (fullText.includes("citibank") || fullText.includes("citi ")) detectedBank = "Citi (PDF)";
+    else if (fullText.includes("wells fargo"))   detectedBank = "Wells Fargo (PDF)";
+    else if (fullText.includes("capital one"))   detectedBank = "Capital One (PDF)";
+
+    // Regex: date (MM/DD or MM/DD/YYYY or MM/DD/YY) + description + amount
+    // Amount may be negative/positive, with $ or without, comma-separated digits
+    const txnRe = /^(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\s+(.+?)\s+(-?\$?[\d,]+\.\d{2})\s*(-?\$?[\d,]+\.\d{2})?$/;
+    // Some banks print balance after amount — capture first amount
+    const amountRe = /(-?)\$?([\d,]+\.\d{2})/;
+
+    for (const line of lines) {
+      const m = line.match(txnRe);
+      if (!m) continue;
+
+      const rawDate  = m[1];
+      const rawDesc  = m[2].trim();
+      const rawAmt   = m[3];
+
+      // Normalise date to YYYY-MM-DD
+      const parts = rawDate.split("/");
+      const mo  = parts[0].padStart(2, "0");
+      const day = parts[1].padStart(2, "0");
+      let yr = parts[2] ? parts[2] : String(new Date().getFullYear());
+      if (yr.length === 2) yr = "20" + yr;
+      const date = `${yr}-${mo}-${day}`;
+
+      // Parse amount
+      const aNeg = rawAmt.startsWith("-");
+      const aNum = parseFloat(rawAmt.replace(/[^0-9.]/g, ""));
+      if (isNaN(aNum) || aNum === 0) continue;
+
+      // Skip obvious non-transaction lines (totals, headers, page numbers)
+      const descLow = rawDesc.toLowerCase();
+      if (
+        descLow.includes("balance") ||
+        descLow.includes("total") ||
+        descLow.includes("payment") && descLow.length < 20 ||
+        descLow === "opening" || descLow === "closing"
+      ) continue;
+
+      const type: "income" | "expense" = aNeg ? "income" : "expense";
+      const isSkip =
+        descLow.includes("payment") ||
+        descLow.includes("transfer") ||
+        descLow.includes("credit");
+
+      rows.push({
+        id: crypto.randomUUID(),
+        date,
+        description: rawDesc,
+        amount: aNum,
+        type,
+        category: type === "income" ? "Other" : "Other",
+        skip: isSkip,
+      });
+    }
+
+    if (rows.length === 0) {
+      return {
+        bank: detectedBank,
+        rows: [],
+        error:
+          "No transactions found in this PDF. The format may not be supported — try the CSV export from your bank instead.",
+      };
+    }
+
+    return { bank: detectedBank, rows };
+  } catch (err) {
+    console.error("PDF parse error", err);
+    return {
+      bank: "",
+      rows: [],
+      error: "Failed to read the PDF. Make sure it is a standard bank statement PDF (not a scanned image).",
+    };
+  }
+}
+
 function parseCSV(text: string): { bank: string; rows: ImportRow[]; error?: string } {
   // Strip BOM
   const cleaned = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
@@ -841,27 +965,52 @@ export function BudgetTracker() {
   const handleFile = useCallback((file: File | undefined) => {
     if (!file) return;
     setCsvError(null);
-    if (!file.name.toLowerCase().endsWith(".csv")) {
-      setCsvError("Please upload a .csv file.");
+    const name = file.name.toLowerCase();
+    const isCSV = name.endsWith(".csv");
+    const isPDF = name.endsWith(".pdf");
+    if (!isCSV && !isPDF) {
+      setCsvError("Please upload a .csv or .pdf file.");
       return;
     }
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      try {
-        const text = (e.target?.result as string) || "";
-        const { bank, rows, error } = parseCSV(text);
-        if (error) { setCsvError(error); return; }
-        setCsvBank(bank);
-        const stamped = rows.map((r) => ({ ...r, entity: activeEntity }));
-        setCsvRows(stamped);
-        setSelectedIds(new Set(stamped.filter((r) => !r.skip).map((r) => r.id)));
-        setCsvStep("review");
-      } catch {
-        setCsvError("Failed to parse the file. Please try a different export.");
-      }
-    };
-    reader.readAsText(file);
-  }, []);
+
+    if (isCSV) {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const text = (e.target?.result as string) || "";
+          const { bank, rows, error } = parseCSV(text);
+          if (error) { setCsvError(error); return; }
+          setCsvBank(bank);
+          const stamped = rows.map((r) => ({ ...r, entity: activeEntity }));
+          setCsvRows(stamped);
+          setSelectedIds(new Set(stamped.filter((r) => !r.skip).map((r) => r.id)));
+          setCsvStep("review");
+        } catch {
+          setCsvError("Failed to parse the CSV. Please try a different export.");
+        }
+      };
+      reader.readAsText(file);
+    } else {
+      // PDF
+      setCsvError(null);
+      const reader = new FileReader();
+      reader.onload = async (e) => {
+        try {
+          const buffer = e.target?.result as ArrayBuffer;
+          const { bank, rows, error } = await parsePDF(buffer);
+          if (error) { setCsvError(error); return; }
+          setCsvBank(bank);
+          const stamped = rows.map((r) => ({ ...r, entity: activeEntity }));
+          setCsvRows(stamped);
+          setSelectedIds(new Set(stamped.filter((r) => !r.skip).map((r) => r.id)));
+          setCsvStep("review");
+        } catch {
+          setCsvError("Failed to read the PDF. Please try a different file.");
+        }
+      };
+      reader.readAsArrayBuffer(file);
+    }
+  }, [activeEntity]);
 
   const toggleRow = useCallback((id: string) => {
     setSelectedIds((prev) => {
@@ -1966,7 +2115,7 @@ export function BudgetTracker() {
           <DialogHeader>
             <DialogTitle className="text-white flex items-center gap-2">
               {csvStep === "upload" ? (
-    "Import Bank Statement — " + activeEntityMeta.short
+    `Import Statement (CSV or PDF) — ${activeEntityMeta.short}`
               ) : (
                 <>
                   Review Transactions
@@ -1986,17 +2135,21 @@ export function BudgetTracker() {
                 onDrop={(e) => { e.preventDefault(); handleFile(e.dataTransfer.files[0]); }}
               >
                 <Upload className="h-10 w-10 text-gray-500 group-hover:text-blue-400 mx-auto mb-3 transition-colors" />
-                <p className="text-white font-medium mb-1">Drop your CSV file here</p>
+                <p className="text-white font-medium mb-1">Drop your CSV or PDF statement here</p>
                 <p className="text-gray-400 text-sm">or click to browse</p>
-                <div className="flex gap-2 justify-center mt-4 flex-wrap">
-                  {["Chase", "Bank of America", "Citi", "American Express"].map((b) => (
-                    <span key={b} className="bg-gray-800 text-gray-400 text-xs px-2.5 py-1 rounded-full">{b}</span>
+                <div className="flex gap-2 justify-center mt-3 flex-wrap">
+                  <span className="bg-gray-800 text-gray-300 text-xs px-2.5 py-1 rounded-full border border-gray-700">.csv</span>
+                  <span className="bg-gray-800 text-gray-300 text-xs px-2.5 py-1 rounded-full border border-gray-700">.pdf</span>
+                </div>
+                <div className="flex gap-2 justify-center mt-2 flex-wrap">
+                  {["Chase", "BofA", "Citi", "Amex", "Wells Fargo", "Capital One"].map((b) => (
+                    <span key={b} className="bg-gray-800/60 text-gray-500 text-xs px-2 py-0.5 rounded-full">{b}</span>
                   ))}
                 </div>
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept=".csv"
+                  accept=".csv,.pdf"
                   className="hidden"
                   onChange={(e) => handleFile(e.target.files?.[0])}
                 />
