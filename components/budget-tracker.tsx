@@ -73,6 +73,36 @@ const ENTITIES: Array<{
   { id: "personal", label: "Personal Household",         short: "Personal",     activeBg: "bg-emerald-600", accentText: "text-emerald-400" },
 ];
 
+// ─── Payment Accounts ────────────────────────────────────────────────────────
+
+interface PaymentAccount {
+  id: string;
+  abbr: string;   // e.g. "BofA", "Amex", "Chase"
+  last4: string;  // last 4 digits
+  type: "bank" | "credit";
+}
+
+const BANK_OPTIONS: { abbr: string; full: string; type: "bank" | "credit" }[] = [
+  { abbr: "BofA",    full: "Bank of America",  type: "bank"   },
+  { abbr: "Chase",   full: "Chase",            type: "bank"   },
+  { abbr: "WF",      full: "Wells Fargo",      type: "bank"   },
+  { abbr: "Citi",    full: "Citi",             type: "credit" },
+  { abbr: "Amex",    full: "American Express", type: "credit" },
+  { abbr: "CapOne",  full: "Capital One",      type: "credit" },
+  { abbr: "Disc",    full: "Discover",         type: "credit" },
+  { abbr: "USBank",  full: "US Bank",          type: "bank"   },
+  { abbr: "TD",      full: "TD Bank",          type: "bank"   },
+  { abbr: "PNC",     full: "PNC",              type: "bank"   },
+  { abbr: "NavyFed", full: "Navy Federal",     type: "bank"   },
+  { abbr: "USAA",    full: "USAA",             type: "bank"   },
+  { abbr: "PayPal",  full: "PayPal",           type: "bank"   },
+  { abbr: "Venmo",   full: "Venmo",            type: "bank"   },
+];
+
+function acctLabel(a: PaymentAccount) {
+  return `${a.abbr} ••••${a.last4}`;
+}
+
 // ─── Interfaces ──────────────────────────────────────────────────────────────
 
 interface Transaction {
@@ -84,6 +114,7 @@ interface Transaction {
   amount: number;
   date: string;
   entity: EntityType;
+  accountId?: string;
 }
 
 interface ImportRow {
@@ -94,6 +125,7 @@ interface ImportRow {
   type: "income" | "expense";
   category: string;
   entity?: EntityType;  // stamped in handleFile after parse
+  accountId?: string;
   skip: boolean; // auto-flagged payments/transfers
 }
 
@@ -510,6 +542,7 @@ export function BudgetTracker() {
     amount: "",
     date: today,
     entity: "personal" as EntityType,
+    accountId: "",
   });
 
   // CSV import state
@@ -525,6 +558,13 @@ export function BudgetTracker() {
   const [activeEntity, setActiveEntity] = useState<EntityType>("personal");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [storageLoaded, setStorageLoaded] = useState(false);
+
+  // ── Payment accounts ──────────────────────────────────────────────────
+  const [accounts, setAccounts] = useState<PaymentAccount[]>([]);
+  const [addingAccount, setAddingAccount]   = useState(false);
+  const [newAcctAbbr,   setNewAcctAbbr]     = useState("");
+  const [newAcctLast4,  setNewAcctLast4]    = useState("");
+  const [newAcctType,   setNewAcctType]     = useState<"bank" | "credit">("bank");
 
   // ── Sort & search state ───────────────────────────────────────────────
   const [sortField, setSortField] = useState<"date" | "description" | "amount">("date");
@@ -562,6 +602,8 @@ export function BudgetTracker() {
     const savedIncSubcats = localStorage.getItem("ft-custom-income-subcats");
     if (savedExpSubcats) setCustomExpenseSubcats(JSON.parse(savedExpSubcats));
     if (savedIncSubcats) setCustomIncomeSubcats(JSON.parse(savedIncSubcats));
+    const savedAccounts = localStorage.getItem("ft-accounts");
+    if (savedAccounts) setAccounts(JSON.parse(savedAccounts));
     setStorageLoaded(true);
   }, []);
 
@@ -589,6 +631,11 @@ export function BudgetTracker() {
     if (!storageLoaded) return;
     localStorage.setItem("ft-custom-income-subcats", JSON.stringify(customIncomeSubcats));
   }, [customIncomeSubcats, storageLoaded]);
+
+  useEffect(() => {
+    if (!storageLoaded) return;
+    localStorage.setItem("ft-accounts", JSON.stringify(accounts));
+  }, [accounts, storageLoaded]);
 
   // ── Filter, search, and sort transactions ──────────────────────────────────
   const filteredTransactions = useMemo(() => {
@@ -655,6 +702,7 @@ export function BudgetTracker() {
                 amount: parseFloat(form.amount),
                 date: form.date,
                 entity: form.entity,
+                accountId: form.accountId || undefined,
               }
             : t
         )
@@ -671,12 +719,13 @@ export function BudgetTracker() {
         amount: parseFloat(form.amount),
         date: form.date,
         entity: activeEntity,
+        accountId: form.accountId || undefined,
       };
       setTransactions((prev) => [t, ...prev]);
     }
     setAddingSubcategory(false);
     setNewSubcatInput("");
-    setForm({ type: "expense", category: "", subcategory: "", description: "", amount: "", date: today, entity: activeEntity });
+    setForm({ type: "expense", category: "", subcategory: "", description: "", amount: "", date: today, entity: activeEntity, accountId: "" });
     setOpen(false);
   }, [form, editingId, activeEntity]);
 
@@ -693,6 +742,7 @@ export function BudgetTracker() {
       amount: t.amount.toString(),
       date: t.date,
       entity: (t.entity ?? "personal") as EntityType,
+      accountId: t.accountId ?? "",
     });
     setEditingId(t.id);
     setOpen(true);
@@ -738,6 +788,29 @@ export function BudgetTracker() {
     setBatchOpen(false);
     setBatchForm({ type: "", category: "", subcategory: "", entity: "" });
   }, [selectedTxIds, batchForm]);
+
+  const addAccount = useCallback(() => {
+    const abbr  = newAcctAbbr.trim();
+    const last4 = newAcctLast4.trim();
+    if (!abbr || last4.length !== 4) return;
+    const existing = accounts.find((a) => a.abbr === abbr && a.last4 === last4);
+    if (!existing) {
+      const newAcct: PaymentAccount = { id: crypto.randomUUID(), abbr, last4, type: newAcctType };
+      setAccounts((prev) => [...prev, newAcct]);
+    }
+    setAddingAccount(false);
+    setNewAcctAbbr("");
+    setNewAcctLast4("");
+    setNewAcctType("bank");
+  }, [newAcctAbbr, newAcctLast4, newAcctType, accounts]);
+
+  const updateRowAccount = useCallback((id: string, accountId: string) => {
+    setCsvRows((prev) => prev.map((r) => (r.id === id ? { ...r, accountId } : r)));
+  }, []);
+
+  const assignAllAccount = useCallback((accountId: string) => {
+    setCsvRows((prev) => prev.map((r) => ({ ...r, accountId })));
+  }, []);
 
   const toggleSort = useCallback((field: "date" | "description" | "amount") => {
     if (sortField === field) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -813,6 +886,7 @@ export function BudgetTracker() {
         amount: r.amount,
         date: r.date,
         entity: r.entity ?? activeEntity,
+        accountId: r.accountId || undefined,
       }));
     if (toImport.length === 0) return;
     setTransactions((prev) => [...toImport, ...prev]);
@@ -1120,7 +1194,10 @@ export function BudgetTracker() {
                   setNewCatInput("");
                   setAddingSubcategory(false);
     setNewSubcatInput("");
-    setForm({ type: "expense", category: "", subcategory: "", description: "", amount: "", date: today, entity: activeEntity });
+    setAddingAccount(false);
+    setNewAcctAbbr("");
+    setNewAcctLast4("");
+    setForm({ type: "expense", category: "", subcategory: "", description: "", amount: "", date: today, entity: activeEntity, accountId: "" });
                 }
               }}>
               <DialogTrigger asChild>
@@ -1327,6 +1404,96 @@ export function BudgetTracker() {
                       )}
                     </div>
                   )}
+
+                  {/* ── Account / Card ─────────────────────────────── */}
+                  <div>
+                    <div className="flex items-center justify-between">
+                      <Label className="text-gray-300 text-sm">Account / Card</Label>
+                      {!addingAccount && (
+                        <button type="button"
+                          onClick={() => setAddingAccount(true)}
+                          className="text-xs text-blue-400 hover:text-blue-300 transition-colors">
+                          + Add
+                        </button>
+                      )}
+                    </div>
+                    {!addingAccount && (
+                      <Select
+                        value={form.accountId || "__none__"}
+                        onValueChange={(v) => setForm((f) => ({ ...f, accountId: v === "__none__" ? "" : v }))}
+                      >
+                        <SelectTrigger className="bg-gray-800 border-gray-700 text-white mt-1">
+                          <SelectValue placeholder="Select account (optional)" />
+                        </SelectTrigger>
+                        <SelectContent className="bg-gray-800 border-gray-700">
+                          <SelectItem value="__none__" className="text-gray-400 focus:bg-gray-700">— None —</SelectItem>
+                          {accounts.length > 0 && <Separator className="my-1 bg-gray-700" />}
+                          {accounts.map((a) => (
+                            <SelectItem key={a.id} value={a.id} className="text-white focus:bg-gray-700">
+                              {acctLabel(a)}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                    {addingAccount && (
+                      <div className="mt-1 space-y-2 p-3 bg-gray-800 rounded-lg border border-gray-700">
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <Label className="text-gray-400 text-xs">Bank / Card</Label>
+                            <Select value={newAcctAbbr} onValueChange={setNewAcctAbbr}>
+                              <SelectTrigger className="bg-gray-900 border-gray-600 text-white mt-1 h-8 text-xs">
+                                <SelectValue placeholder="Select…" />
+                              </SelectTrigger>
+                              <SelectContent className="bg-gray-900 border-gray-700">
+                                {BANK_OPTIONS.map((b) => (
+                                  <SelectItem key={b.abbr} value={b.abbr} className="text-white focus:bg-gray-700 text-xs">
+                                    {b.abbr} <span className="text-gray-500 ml-1">({b.full})</span>
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                          <div>
+                            <Label className="text-gray-400 text-xs">Last 4 digits</Label>
+                            <Input
+                              value={newAcctLast4}
+                              onChange={(e) => setNewAcctLast4(e.target.value.replace(/\D/g, "").slice(0, 4))}
+                              placeholder="1234"
+                              maxLength={4}
+                              className="bg-gray-900 border-gray-600 text-white mt-1 h-8 text-xs placeholder:text-gray-600"
+                            />
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-2 gap-1">
+                          <button type="button"
+                            onClick={() => setNewAcctType("bank")}
+                            className={cn("text-xs py-1 rounded border transition-colors",
+                              newAcctType === "bank" ? "bg-blue-600 border-blue-600 text-white" : "border-gray-600 text-gray-400 hover:text-white")}>
+                            🏦 Bank
+                          </button>
+                          <button type="button"
+                            onClick={() => setNewAcctType("credit")}
+                            className={cn("text-xs py-1 rounded border transition-colors",
+                              newAcctType === "credit" ? "bg-blue-600 border-blue-600 text-white" : "border-gray-600 text-gray-400 hover:text-white")}>
+                            💳 Credit
+                          </button>
+                        </div>
+                        <div className="flex gap-2">
+                          <Button size="sm" onClick={addAccount}
+                            disabled={!newAcctAbbr || newAcctLast4.length !== 4}
+                            className="flex-1 h-7 text-xs bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40">
+                            <Check className="h-3.5 w-3.5 mr-1" /> Save Account
+                          </Button>
+                          <Button size="sm" variant="ghost"
+                            onClick={() => { setAddingAccount(false); setNewAcctAbbr(""); setNewAcctLast4(""); }}
+                            className="h-7 px-2 text-xs text-gray-400 hover:text-white">
+                            <X className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
 
                   <div>
                     <Label className="text-gray-300 text-sm">Description</Label>
@@ -1647,6 +1814,14 @@ export function BudgetTracker() {
                               › {t.subcategory}
                             </Badge>
                           )}
+                          {t.accountId && (() => {
+                            const acct = accounts.find((a) => a.id === t.accountId);
+                            return acct ? (
+                              <Badge variant="secondary" className="text-xs bg-transparent text-blue-400 border border-gray-700 py-0 px-1.5">
+                                {acctLabel(acct)}
+                              </Badge>
+                            ) : null;
+                          })()}
                         </div>
                       </div>
                       {/* Amount */}
@@ -1782,6 +1957,19 @@ export function BudgetTracker() {
                 ))}
               </div>
 
+              {/* Bulk account assign */}
+              {accounts.length > 0 && (
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-xs text-gray-400 flex-shrink-0">Account:</span>
+                  {accounts.map((a) => (
+                    <button key={a.id} onClick={() => assignAllAccount(a.id)}
+                      className="text-xs px-2.5 py-1 rounded-full border border-gray-700 text-blue-400 hover:border-blue-600 hover:bg-blue-600/10 transition-colors">
+                      {acctLabel(a)}
+                    </button>
+                  ))}
+                </div>
+              )}
+
               {/* Transaction rows */}
               <ScrollArea className="h-72 border border-gray-800 rounded-lg">
                 <div className="divide-y divide-gray-800">
@@ -1855,6 +2043,27 @@ export function BudgetTracker() {
                                 </button>
                               ))}
                             </div>
+                            {/* Per-row account picker */}
+                            {accounts.length > 0 && (
+                              <div className="flex-shrink-0" onClick={(e) => e.stopPropagation()}>
+                                <Select
+                                  value={row.accountId || "__none__"}
+                                  onValueChange={(v) => updateRowAccount(row.id, v === "__none__" ? "" : v)}
+                                >
+                                  <SelectTrigger className="h-6 text-xs bg-gray-800 border-gray-700 text-gray-300 w-32 px-2">
+                                    <SelectValue placeholder="Acct…" />
+                                  </SelectTrigger>
+                                  <SelectContent className="bg-gray-800 border-gray-700">
+                                    <SelectItem value="__none__" className="text-gray-400 text-xs focus:bg-gray-700">— None —</SelectItem>
+                                    {accounts.map((a) => (
+                                      <SelectItem key={a.id} value={a.id} className="text-white text-xs focus:bg-gray-700">
+                                        {acctLabel(a)}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                              </div>
+                            )}
                             {row.skip && (
                               <span className="text-xs bg-yellow-500/20 text-yellow-400 px-1.5 py-0.5 rounded flex-shrink-0">
                                 payment
