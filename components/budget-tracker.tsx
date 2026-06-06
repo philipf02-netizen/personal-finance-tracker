@@ -1130,7 +1130,7 @@ export function BudgetTracker() {
                   </div>
 
                   {/* ── Sub-category selector (shown when category has sub-cats) ── */}
-                  {form.category && getSubcategories(form.type, form.category).length > 0 && (
+                  {form.category && (
                     <div>
                       <Label className="text-gray-300 text-sm">Sub-category <span className="text-gray-500 font-normal">(optional)</span></Label>
                       <Select
@@ -1153,10 +1153,14 @@ export function BudgetTracker() {
                         </SelectTrigger>
                         <SelectContent className="bg-gray-800 border-gray-700">
                           <SelectItem value="__none__" className="text-gray-400 focus:bg-gray-700">— None —</SelectItem>
-                          <Separator className="my-1 bg-gray-700" />
-                          {getSubcategories(form.type, form.category).map((s) => (
-                            <SelectItem key={s} value={s} className="text-white focus:bg-gray-700">{s}</SelectItem>
-                          ))}
+                          {getSubcategories(form.type, form.category).length > 0 && (
+                            <>
+                              <Separator className="my-1 bg-gray-700" />
+                              {getSubcategories(form.type, form.category).map((s) => (
+                                <SelectItem key={s} value={s} className="text-white focus:bg-gray-700">{s}</SelectItem>
+                              ))}
+                            </>
+                          )}
                           <Separator className="my-1 bg-gray-700" />
                           <SelectItem value="__add_new_sub__" className="text-blue-400 focus:bg-gray-700 focus:text-blue-300">+ New sub-category…</SelectItem>
                         </SelectContent>
