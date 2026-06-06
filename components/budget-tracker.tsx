@@ -20,6 +20,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import {
@@ -48,6 +49,7 @@ import {
   Upload,
   AlertCircle,
   Check,
+  ListChecks,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -520,6 +522,16 @@ export function BudgetTracker() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [storageLoaded, setStorageLoaded] = useState(false);
 
+  // ── Batch-edit state ───────────────────────────────────────────────────
+  const [selectedTxIds, setSelectedTxIds] = useState<Set<string>>(new Set());
+  const [batchOpen, setBatchOpen] = useState(false);
+  const [batchForm, setBatchForm] = useState<{
+    type: "income" | "expense" | "";
+    category: string;
+    subcategory: string;
+    entity: EntityType | "";
+  }>({ type: "", category: "", subcategory: "", entity: "" });
+
   // ── Custom categories ───────────────────────────────────────────────────
   const [customExpenseCats, setCustomExpenseCats] = useState<string[]>([]);
   const [customIncomeCats, setCustomIncomeCats]  = useState<string[]>([]);
@@ -664,6 +676,43 @@ export function BudgetTracker() {
     setTransactions((prev) => prev.filter((t) => (t.entity ?? "personal") !== activeEntity));
   }, [activeEntity]);
 
+  // ── Batch-edit helpers ───────────────────────────────────────────────────
+
+  const toggleSelectTx = useCallback((id: string) => {
+    setSelectedTxIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const toggleSelectAll = useCallback(() => {
+    setSelectedTxIds((prev) =>
+      prev.size === filteredTransactions.length
+        ? new Set()
+        : new Set(filteredTransactions.map((t) => t.id))
+    );
+  }, [filteredTransactions]);
+
+  const applyBatchEdit = useCallback(() => {
+    if (selectedTxIds.size === 0) return;
+    setTransactions((prev) =>
+      prev.map((t) => {
+        if (!selectedTxIds.has(t.id)) return t;
+        return {
+          ...t,
+          ...(batchForm.type      ? { type: batchForm.type }                                  : {}),
+          ...(batchForm.category  ? { category: batchForm.category, subcategory: undefined }  : {}),
+          ...(batchForm.subcategory && batchForm.category ? { subcategory: batchForm.subcategory } : {}),
+          ...(batchForm.entity    ? { entity: batchForm.entity }                               : {}),
+        };
+      })
+    );
+    setSelectedTxIds(new Set());
+    setBatchOpen(false);
+    setBatchForm({ type: "", category: "", subcategory: "", entity: "" });
+  }, [selectedTxIds, batchForm]);
+
   // ── CSV import handlers ──────────────────────────────────────────────────
 
   const resetCsvDialog = useCallback(() => {
@@ -787,7 +836,7 @@ export function BudgetTracker() {
         {ENTITIES.map((e) => (
           <button
             key={e.id}
-            onClick={() => setActiveEntity(e.id)}
+            onClick={() => { setActiveEntity(e.id); setSelectedTxIds(new Set()); setBatchOpen(false); }}
             className={cn(
               "flex-1 text-sm font-medium py-2.5 px-3 rounded-lg transition-all duration-200",
               activeEntity === e.id
@@ -1294,6 +1343,171 @@ export function BudgetTracker() {
           </div>
         </CardHeader>
         <CardContent className="p-0">
+          {/* ── Batch-edit toolbar ─────────────────────────────────────── */}
+          {filteredTransactions.length > 0 && (
+            <div className="flex items-center gap-2 px-4 py-2 border-b border-gray-800 bg-gray-900/60">
+              <Checkbox
+                id="select-all"
+                checked={selectedTxIds.size === filteredTransactions.length && filteredTransactions.length > 0}
+                onCheckedChange={toggleSelectAll}
+                className="border-gray-600 data-[state=checked]:bg-blue-600 data-[state=checked]:border-blue-600"
+              />
+              <label htmlFor="select-all" className="text-xs text-gray-400 cursor-pointer select-none">
+                {selectedTxIds.size === 0
+                  ? "Select all"
+                  : `${selectedTxIds.size} selected`}
+              </label>
+              {selectedTxIds.size > 0 && (
+                <>
+                  <Button
+                    size="sm"
+                    onClick={() => setBatchOpen((o) => !o)}
+                    className="ml-2 h-7 px-2.5 text-xs bg-blue-600 hover:bg-blue-700 text-white"
+                  >
+                    <ListChecks className="h-3.5 w-3.5 mr-1" />
+                    Edit {selectedTxIds.size}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => { setSelectedTxIds(new Set()); setBatchOpen(false); }}
+                    className="h-7 px-2 text-xs text-gray-400 hover:text-white"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </Button>
+                </>
+              )}
+            </div>
+          )}
+
+          {/* ── Batch-edit panel ──────────────────────────────────────── */}
+          {batchOpen && selectedTxIds.size > 0 && (
+            <div className="border-b border-blue-800 bg-blue-950/30 px-4 py-3 space-y-3">
+              <p className="text-xs text-blue-300 font-medium">
+                Apply to {selectedTxIds.size} transaction{selectedTxIds.size > 1 ? "s" : ""} — leave a field blank to keep its current value
+              </p>
+              <div className="grid grid-cols-2 gap-2">
+                {/* Type */}
+                <div>
+                  <Label className="text-gray-400 text-xs">Type</Label>
+                  <Select
+                    value={batchForm.type || "__none__"}
+                    onValueChange={(v) =>
+                      setBatchForm((f) => ({ ...f, type: v === "__none__" ? "" : v as "income" | "expense", category: "", subcategory: "" }))
+                    }
+                  >
+                    <SelectTrigger className="bg-gray-800 border-gray-700 text-white mt-1 h-8 text-xs">
+                      <SelectValue placeholder="Keep current" />
+                    </SelectTrigger>
+                    <SelectContent className="bg-gray-800 border-gray-700">
+                      <SelectItem value="__none__" className="text-gray-400 focus:bg-gray-700 text-xs">— Keep current —</SelectItem>
+                      <SelectItem value="income"  className="text-emerald-400 focus:bg-gray-700 text-xs">Income</SelectItem>
+                      <SelectItem value="expense" className="text-red-400   focus:bg-gray-700 text-xs">Expense</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                {/* Entity */}
+                <div>
+                  <Label className="text-gray-400 text-xs">Entity</Label>
+                  <Select
+                    value={batchForm.entity || "__none__"}
+                    onValueChange={(v) =>
+                      setBatchForm((f) => ({ ...f, entity: v === "__none__" ? "" : v as EntityType }))
+                    }
+                  >
+                    <SelectTrigger className="bg-gray-800 border-gray-700 text-white mt-1 h-8 text-xs">
+                      <SelectValue placeholder="Keep current" />
+                    </SelectTrigger>
+                    <SelectContent className="bg-gray-800 border-gray-700">
+                      <SelectItem value="__none__"  className="text-gray-400   focus:bg-gray-700 text-xs">— Keep current —</SelectItem>
+                      <SelectItem value="phc"       className="text-blue-400   focus:bg-gray-700 text-xs">Performance Hearing Center</SelectItem>
+                      <SelectItem value="pfi"       className="text-purple-400 focus:bg-gray-700 text-xs">Philip Fernandes Insurance</SelectItem>
+                      <SelectItem value="personal"  className="text-emerald-400 focus:bg-gray-700 text-xs">Personal Household</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                {/* Category */}
+                <div>
+                  <Label className="text-gray-400 text-xs">Category</Label>
+                  <Select
+                    value={batchForm.category || "__none__"}
+                    onValueChange={(v) =>
+                      setBatchForm((f) => ({ ...f, category: v === "__none__" ? "" : v, subcategory: "" }))
+                    }
+                  >
+                    <SelectTrigger className="bg-gray-800 border-gray-700 text-white mt-1 h-8 text-xs">
+                      <SelectValue placeholder="Keep current" />
+                    </SelectTrigger>
+                    <SelectContent className="bg-gray-800 border-gray-700">
+                      <SelectItem value="__none__" className="text-gray-400 focus:bg-gray-700 text-xs">— Keep current —</SelectItem>
+                      {batchForm.type !== "income" && (
+                        <>
+                          <SelectItem value="__hdr_exp__" disabled className="text-gray-500 text-xs font-semibold">── Expenses ──</SelectItem>
+                          {[...EXPENSE_CATEGORIES, ...customExpenseCats].map((c) => (
+                            <SelectItem key={c} value={c} className="text-white focus:bg-gray-700 text-xs">{c}</SelectItem>
+                          ))}
+                        </>
+                      )}
+                      {batchForm.type !== "expense" && (
+                        <>
+                          <SelectItem value="__hdr_inc__" disabled className="text-gray-500 text-xs font-semibold">── Income ──</SelectItem>
+                          {[...INCOME_CATEGORIES, ...customIncomeCats].map((c) => (
+                            <SelectItem key={c} value={c} className="text-white focus:bg-gray-700 text-xs">{c}</SelectItem>
+                          ))}
+                        </>
+                      )}
+                    </SelectContent>
+                  </Select>
+                </div>
+                {/* Sub-category */}
+                <div>
+                  <Label className="text-gray-400 text-xs">Sub-category</Label>
+                  <Select
+                    value={batchForm.subcategory || "__none__"}
+                    onValueChange={(v) =>
+                      setBatchForm((f) => ({ ...f, subcategory: v === "__none__" ? "" : v }))
+                    }
+                    disabled={!batchForm.category}
+                  >
+                    <SelectTrigger className="bg-gray-800 border-gray-700 text-white mt-1 h-8 text-xs disabled:opacity-40">
+                      <SelectValue placeholder={batchForm.category ? "Keep current" : "Pick category first"} />
+                    </SelectTrigger>
+                    <SelectContent className="bg-gray-800 border-gray-700">
+                      <SelectItem value="__none__" className="text-gray-400 focus:bg-gray-700 text-xs">— Keep current —</SelectItem>
+                      {batchForm.category && (() => {
+                        const subs = [
+                          ...((batchForm.type === "income" ? INCOME_SUBCATEGORIES : EXPENSE_SUBCATEGORIES)[batchForm.category] ?? []),
+                          ...((batchForm.type === "income" ? customIncomeSubcats : customExpenseSubcats)[batchForm.category] ?? []),
+                        ];
+                        return subs.map((s) => (
+                          <SelectItem key={s} value={s} className="text-white focus:bg-gray-700 text-xs">{s}</SelectItem>
+                        ));
+                      })()}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <div className="flex gap-2 pt-1">
+                <Button
+                  size="sm"
+                  onClick={applyBatchEdit}
+                  disabled={!batchForm.type && !batchForm.category && !batchForm.entity}
+                  className="h-7 px-3 text-xs bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40"
+                >
+                  <Check className="h-3.5 w-3.5 mr-1" /> Apply
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => { setBatchOpen(false); setBatchForm({ type: "", category: "", subcategory: "", entity: "" }); }}
+                  className="h-7 px-3 text-xs text-gray-400 hover:text-white"
+                >
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          )}
+
           <ScrollArea className="h-72">
             {transactions.length === 0 ? (
               <div className="p-8 text-center text-gray-500 text-sm">
@@ -1304,8 +1518,16 @@ export function BudgetTracker() {
                 {filteredTransactions.map((t, idx) => (
                   <div key={t.id}>
                     {idx > 0 && <Separator className="bg-gray-800" />}
-                    <div className="flex items-center justify-between px-4 py-3 hover:bg-gray-800/40 transition-colors">
+                    <div className={cn(
+                      "flex items-center justify-between px-4 py-3 transition-colors",
+                      selectedTxIds.has(t.id) ? "bg-blue-950/40" : "hover:bg-gray-800/40"
+                    )}>
                       <div className="flex items-center gap-3">
+                        <Checkbox
+                          checked={selectedTxIds.has(t.id)}
+                          onCheckedChange={() => toggleSelectTx(t.id)}
+                          className="border-gray-600 data-[state=checked]:bg-blue-600 data-[state=checked]:border-blue-600 flex-shrink-0"
+                        />
                         <div
                           className={cn(
                             "w-1 h-10 rounded-full flex-shrink-0",
