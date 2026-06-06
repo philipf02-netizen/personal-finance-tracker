@@ -45,11 +45,15 @@ import {
   Activity,
   ArrowUp,
   ArrowDown,
+  ArrowUpDown,
   TrendingUp,
   Upload,
   AlertCircle,
   Check,
   ListChecks,
+  Search,
+  ChevronUp,
+  ChevronDown,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -522,6 +526,11 @@ export function BudgetTracker() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [storageLoaded, setStorageLoaded] = useState(false);
 
+  // ── Sort & search state ───────────────────────────────────────────────
+  const [sortField, setSortField] = useState<"date" | "description" | "amount">("date");
+  const [sortDir,   setSortDir]   = useState<"desc" | "asc">("desc");
+  const [searchQuery, setSearchQuery] = useState("");
+
   // ── Batch-edit state ───────────────────────────────────────────────────
   const [selectedTxIds, setSelectedTxIds] = useState<Set<string>>(new Set());
   const [batchOpen, setBatchOpen] = useState(false);
@@ -581,11 +590,28 @@ export function BudgetTracker() {
     localStorage.setItem("ft-custom-income-subcats", JSON.stringify(customIncomeSubcats));
   }, [customIncomeSubcats, storageLoaded]);
 
-  // ── Filter transactions to active entity (existing data defaults to "personal") ──
-  const filteredTransactions = useMemo(
-    () => transactions.filter((t) => (t.entity ?? "personal") === activeEntity),
-    [transactions, activeEntity]
-  );
+  // ── Filter, search, and sort transactions ──────────────────────────────────
+  const filteredTransactions = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    let list = transactions.filter((t) => (t.entity ?? "personal") === activeEntity);
+    if (q) {
+      list = list.filter((t) =>
+        t.description.toLowerCase().includes(q) ||
+        t.category.toLowerCase().includes(q) ||
+        (t.subcategory ?? "").toLowerCase().includes(q) ||
+        t.date.includes(q) ||
+        t.amount.toString().includes(q)
+      );
+    }
+    list = [...list].sort((a, b) => {
+      let cmp = 0;
+      if (sortField === "date")             cmp = a.date.localeCompare(b.date);
+      else if (sortField === "description") cmp = a.description.toLowerCase().localeCompare(b.description.toLowerCase());
+      else if (sortField === "amount")      cmp = a.amount - b.amount;
+      return sortDir === "asc" ? cmp : -cmp;
+    });
+    return list;
+  }, [transactions, activeEntity, searchQuery, sortField, sortDir]);
 
   const summary = useMemo(() => {
     const income = filteredTransactions.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0);
@@ -712,6 +738,11 @@ export function BudgetTracker() {
     setBatchOpen(false);
     setBatchForm({ type: "", category: "", subcategory: "", entity: "" });
   }, [selectedTxIds, batchForm]);
+
+  const toggleSort = useCallback((field: "date" | "description" | "amount") => {
+    if (sortField === field) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    else { setSortField(field); setSortDir(field === "date" ? "desc" : "asc"); }
+  }, [sortField]);
 
   // ── CSV import handlers ──────────────────────────────────────────────────
 
@@ -1050,9 +1081,15 @@ export function BudgetTracker() {
 
       {/* Transactions */}
       <Card className="bg-gray-900 border-gray-800">
-        <CardHeader className="flex flex-row items-center justify-between">
-<CardTitle className="text-white text-base flex items-center gap-2">Transactions<span className={cn("text-xs font-normal px-2 py-0.5 rounded-full", activeEntityMeta.activeBg + "/20", activeEntityMeta.accentText)}>{activeEntityMeta.short}</span></CardTitle>
-          <div className="flex gap-2 items-center">
+        <CardHeader className="flex flex-col gap-3 pb-3">
+          <div className="flex flex-row items-center justify-between">
+            <CardTitle className="text-white text-base flex items-center gap-2">
+              Transactions
+              <span className={cn("text-xs font-normal px-2 py-0.5 rounded-full", activeEntityMeta.activeBg + "/20", activeEntityMeta.accentText)}>
+                {activeEntityMeta.short}
+              </span>
+            </CardTitle>
+            <div className="flex gap-2 items-center">
             {transactions.length > 0 && (
               <Button
                 variant="ghost"
@@ -1340,6 +1377,56 @@ export function BudgetTracker() {
                 </div>
               </DialogContent>
             </Dialog>
+            </div>
+          </div>
+
+          {/* ── Search + Sort bar ────────────────────────────────────── */}
+          <div className="flex flex-col sm:flex-row gap-2">
+            <div className="relative flex-1">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-gray-500 pointer-events-none" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search by name, category, date or amount…"
+                className="w-full bg-gray-800 border border-gray-700 rounded-md pl-8 pr-8 py-1.5 text-sm text-white placeholder:text-gray-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery("")}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </div>
+            <div className="flex gap-1 flex-shrink-0">
+              {(["date", "description", "amount"] as const).map((field) => {
+                const labels: Record<string, string> = { date: "Date", description: "Name", amount: "Amount" };
+                const active = sortField === field;
+                return (
+                  <button
+                    key={field}
+                    type="button"
+                    onClick={() => toggleSort(field)}
+                    className={cn(
+                      "flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-medium border transition-colors",
+                      active
+                        ? "bg-gray-700 border-gray-600 text-white"
+                        : "border-gray-700 text-gray-500 hover:text-white hover:border-gray-600 bg-transparent"
+                    )}
+                  >
+                    {labels[field]}
+                    {active
+                      ? sortDir === "asc"
+                        ? <ChevronUp   className="h-3 w-3 ml-0.5" />
+                        : <ChevronDown className="h-3 w-3 ml-0.5" />
+                      : <ArrowUpDown className="h-3 w-3 ml-0.5 opacity-40" />}
+                  </button>
+                );
+              })}
+            </div>
           </div>
         </CardHeader>
         <CardContent className="p-0">
@@ -1509,9 +1596,11 @@ export function BudgetTracker() {
           )}
 
           <ScrollArea className="h-72">
-            {transactions.length === 0 ? (
+            {filteredTransactions.length === 0 ? (
               <div className="p-8 text-center text-gray-500 text-sm">
-                No transactions yet. Add one or import a statement to get started!
+                {searchQuery
+                  ? `No transactions match "${searchQuery}"`
+                  : "No transactions yet. Add one or import a statement to get started!"}
               </div>
             ) : (
               <div>
