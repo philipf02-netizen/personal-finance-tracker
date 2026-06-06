@@ -484,9 +484,24 @@ async function parsePDF(
   buffer: ArrayBuffer
 ): Promise<{ bank: string; rows: ImportRow[]; error?: string }> {
   try {
-    const pdfjsLib = await import("pdfjs-dist");
-    pdfjsLib.GlobalWorkerOptions.workerSrc =
-      `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
+    // Load PDF.js from CDN at runtime to avoid Next.js bundling incompatibilities.
+    // Using v3.11.174 — stable, widely tested, worker .js files available on cdnjs.
+    const PDFJS_VERSION = "3.11.174";
+    const PDFJS_CDN = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${PDFJS_VERSION}`;
+
+    if (typeof (window as any).pdfjsLib === "undefined") {
+      await new Promise<void>((resolve, reject) => {
+        const script = document.createElement("script");
+        script.src = `${PDFJS_CDN}/pdf.min.js`;
+        script.onload = () => resolve();
+        script.onerror = () => reject(new Error("Failed to load PDF.js from CDN"));
+        document.head.appendChild(script);
+      });
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const pdfjsLib = (window as any).pdfjsLib;
+    pdfjsLib.GlobalWorkerOptions.workerSrc = `${PDFJS_CDN}/pdf.worker.min.js`;
 
     const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
     const lines: string[] = [];
@@ -495,9 +510,9 @@ async function parsePDF(
       const page = await pdf.getPage(p);
       const content = await page.getTextContent();
 
-      // Group text items by Y position using a ±2px tolerance band.
-      // This is critical: Chase PDFs have slight Y-offset variations between
-      // columns on the same visual row, so exact rounding splits rows incorrectly.
+      // Group text items by Y position using a ±5px tolerance band.
+      // Bank statement PDFs have slight Y-offset variations between columns
+      // on the same visual row — exact rounding splits transaction rows apart.
       const yGroups: { y: number; items: { str: string; x: number }[] }[] = [];
       for (const item of content.items as { str: string; transform: number[] }[]) {
         const str = item.str.trim();
@@ -519,7 +534,12 @@ async function parsePDF(
       for (const { items } of yGroups) {
         // Sort items left-to-right within the row
         items.sort((a, b) => a.x - b.x);
-        const line = items.map((i) => i.str).join(" ").replace(/\s+/g, " ").replace(/- (\d)/g, "-$1").trim();
+        const line = items
+          .map((i) => i.str)
+          .join(" ")
+          .replace(/\s+/g, " ")
+          .replace(/- (\d)/g, "-$1") // normalize "- 39.00" → "-39.00"
+          .trim();
         if (line) lines.push(line);
       }
     }
@@ -568,7 +588,6 @@ async function parsePDF(
         const minYr = Math.min(...years);
         const maxYr = Math.max(...years);
         if (minYr !== maxYr) {
-          // Oct–Dec belong to the earlier year in year-spanning statements
           return parseInt(mo) >= 10 ? minYr : maxYr;
         }
         return minYr;
@@ -578,10 +597,8 @@ async function parsePDF(
 
     // ── Transaction parsing ─────────────────────────────────────────────────
     const rows: ImportRow[] = [];
-    // Transaction line starts with MM/DD (optionally /YY or /YYYY)
     const datePrefixRe = /^\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\s/;
-    // Match last 1 or 2 dollar-style amounts at end of line
-    // Group 1+2 = two amounts (txn amount + balance); Group 3 = single amount
+    // Match last 1 or 2 amounts at end of line (txn amount + optional balance)
     const endAmtsRe = /\s(-?\$?[\d,]+\.\d{2})\s+(\$?[\d,]+\.\d{2})\s*$|\s(-?\$?[\d,]+\.\d{2})\s*$/;
 
     const SKIP_EXACT = new Set([
@@ -593,7 +610,6 @@ async function parsePDF(
       const line = lines[i];
       if (!datePrefixRe.test(line)) continue;
 
-      // Extract date parts
       const dateMatch = line.match(/^(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?/);
       if (!dateMatch) continue;
 
@@ -608,8 +624,8 @@ async function parsePDF(
       }
       const date = `${yr}-${mo}-${day}`;
 
-      // If this line has no amounts yet, try merging with the next line
-      // (Chase sometimes wraps long descriptions onto a second line)
+      // Merge with next line if current line has no trailing amounts
+      // (some banks wrap long descriptions onto a second line)
       let fullLine = line;
       if (
         !endAmtsRe.test(line) &&
@@ -620,14 +636,12 @@ async function parsePDF(
         fullLine = line + " " + lines[i + 1];
       }
 
-      // Extract the trailing amount(s)
       const amtMatch = fullLine.match(endAmtsRe);
       if (!amtMatch) continue;
 
-      // When two amounts are present: first = txn amount, second = running balance
+      // Two amounts → first is txn amount, second is running balance
       const rawAmt = amtMatch[1] !== undefined ? amtMatch[1] : amtMatch[3];
 
-      // Description = text between date and the trailing amounts
       const afterDate = fullLine.replace(/^\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\s+/, "");
       const rawDesc = afterDate
         .replace(/\s+-?\$?[\d,]+\.\d{2}\s+\$?[\d,]+\.\d{2}\s*$/, "")
@@ -642,7 +656,7 @@ async function parsePDF(
       const aNum = parseFloat(rawAmt.replace(/[^0-9.]/g, ""));
       if (isNaN(aNum) || aNum === 0) continue;
 
-      // Standard bank convention: negative = expense (debit), positive = income (credit)
+      // Bank convention: negative = expense (debit), positive = income (credit)
       const type: "income" | "expense" = aNeg ? "expense" : "income";
 
       rows.push({
@@ -668,11 +682,11 @@ async function parsePDF(
     return { bank: detectedBank, rows };
   } catch (err) {
     console.error("PDF parse error", err);
+    const msg = err instanceof Error ? err.message : String(err);
     return {
       bank: "",
       rows: [],
-      error:
-        "Failed to read the PDF. Make sure it is a standard bank statement PDF (not a scanned image).",
+      error: `Failed to read the PDF: ${msg}`,
     };
   }
 }
