@@ -73,6 +73,7 @@ interface Transaction {
   id: string;
   type: "income" | "expense";
   category: string;
+  subcategory?: string;
   description: string;
   amount: number;
   date: string;
@@ -113,6 +114,30 @@ const INCOME_CATEGORIES = [
   "Bonus",
   "Other",
 ];
+
+type SubcategoryMap = Record<string, string[]>;
+
+const EXPENSE_SUBCATEGORIES: SubcategoryMap = {
+  "Housing":        ["Rent/Mortgage", "HOA Fees", "Repairs & Maintenance", "Furniture", "Supplies"],
+  "Food & Dining":  ["Groceries", "Restaurants", "Fast Food", "Coffee Shops", "Food Delivery"],
+  "Transportation": ["Gas", "Car Payment", "Car Insurance", "Parking", "Rideshare", "Public Transit", "Maintenance"],
+  "Entertainment":  ["Streaming Services", "Movies & Theater", "Concerts & Events", "Hobbies", "Sports"],
+  "Healthcare":     ["Doctor Visits", "Dentist", "Pharmacy", "Health Insurance", "Gym & Fitness"],
+  "Education":      ["Tuition", "Books & Supplies", "Online Courses", "Tutoring"],
+  "Shopping":       ["Clothing", "Electronics", "Home Goods", "Personal Care", "Gifts"],
+  "Utilities":      ["Electric", "Gas/Heating", "Water", "Internet", "Phone/Mobile", "Cable/Streaming"],
+  "Insurance":      ["Health Insurance", "Auto Insurance", "Home Insurance", "Life Insurance"],
+  "Other":          [],
+};
+
+const INCOME_SUBCATEGORIES: SubcategoryMap = {
+  "Salary":     ["Regular Pay", "Overtime", "Commission", "Tips"],
+  "Freelance":  ["Design", "Writing", "Development", "Consulting", "Other Projects"],
+  "Investment": ["Dividends", "Capital Gains", "Interest", "Rental Income"],
+  "Business":   ["Sales Revenue", "Service Revenue", "Reimbursement"],
+  "Bonus":      ["Performance Bonus", "Holiday Bonus", "Referral"],
+  "Other":      [],
+};
 
 const CAT_COLORS = [
   "#10b981",
@@ -474,6 +499,7 @@ export function BudgetTracker() {
   const [form, setForm] = useState({
     type: "expense" as "income" | "expense",
     category: "",
+    subcategory: "",
     description: "",
     amount: "",
     date: today,
@@ -497,6 +523,10 @@ export function BudgetTracker() {
   const [customIncomeCats, setCustomIncomeCats]  = useState<string[]>([]);
   const [addingCategory, setAddingCategory]      = useState(false);
   const [newCatInput, setNewCatInput]            = useState("");
+  const [customExpenseSubcats, setCustomExpenseSubcats] = useState<SubcategoryMap>({});
+  const [customIncomeSubcats, setCustomIncomeSubcats]   = useState<SubcategoryMap>({});
+  const [addingSubcategory, setAddingSubcategory]       = useState(false);
+  const [newSubcatInput, setNewSubcatInput]             = useState("");
 
   useEffect(() => {
     const saved = localStorage.getItem("ft-transactions");
@@ -505,6 +535,10 @@ export function BudgetTracker() {
     const savedIncCats = localStorage.getItem("ft-custom-income-cats");
     if (savedExpCats) setCustomExpenseCats(JSON.parse(savedExpCats));
     if (savedIncCats) setCustomIncomeCats(JSON.parse(savedIncCats));
+    const savedExpSubcats = localStorage.getItem("ft-custom-expense-subcats");
+    const savedIncSubcats = localStorage.getItem("ft-custom-income-subcats");
+    if (savedExpSubcats) setCustomExpenseSubcats(JSON.parse(savedExpSubcats));
+    if (savedIncSubcats) setCustomIncomeSubcats(JSON.parse(savedIncSubcats));
   }, []);
 
   useEffect(() => {
@@ -518,6 +552,14 @@ export function BudgetTracker() {
   useEffect(() => {
     localStorage.setItem("ft-custom-income-cats", JSON.stringify(customIncomeCats));
   }, [customIncomeCats]);
+
+  useEffect(() => {
+    localStorage.setItem("ft-custom-expense-subcats", JSON.stringify(customExpenseSubcats));
+  }, [customExpenseSubcats]);
+
+  useEffect(() => {
+    localStorage.setItem("ft-custom-income-subcats", JSON.stringify(customIncomeSubcats));
+  }, [customIncomeSubcats]);
 
   // ── Filter transactions to active entity (existing data defaults to "personal") ──
   const filteredTransactions = useMemo(
@@ -562,6 +604,7 @@ export function BudgetTracker() {
                 ...t,
                 type: form.type,
                 category: form.category,
+                subcategory: form.subcategory || undefined,
                 description: form.description,
                 amount: parseFloat(form.amount),
                 date: form.date,
@@ -576,6 +619,7 @@ export function BudgetTracker() {
         id: crypto.randomUUID(),
         type: form.type,
         category: form.category,
+        subcategory: form.subcategory || undefined,
         description: form.description,
         amount: parseFloat(form.amount),
         date: form.date,
@@ -583,7 +627,9 @@ export function BudgetTracker() {
       };
       setTransactions((prev) => [t, ...prev]);
     }
-    setForm({ type: "expense", category: "", description: "", amount: "", date: today });
+    setAddingSubcategory(false);
+    setNewSubcatInput("");
+    setForm({ type: "expense", category: "", subcategory: "", description: "", amount: "", date: today });
     setOpen(false);
   }, [form, editingId, activeEntity]);
 
@@ -595,6 +641,7 @@ export function BudgetTracker() {
     setForm({
       type: t.type,
       category: t.category,
+      subcategory: t.subcategory ?? "",
       description: t.description,
       amount: t.amount.toString(),
       date: t.date,
@@ -698,6 +745,28 @@ export function BudgetTracker() {
     setAddingCategory(false);
     setNewCatInput("");
   }, [newCatInput, form.type]);
+
+  // ── Sub-category helpers ──────────────────────────────────────────────────
+  const getSubcategories = useCallback((type: "income" | "expense", category: string): string[] => {
+    const builtIn = (type === "expense" ? EXPENSE_SUBCATEGORIES : INCOME_SUBCATEGORIES)[category] ?? [];
+    const custom  = (type === "expense" ? customExpenseSubcats  : customIncomeSubcats)[category]  ?? [];
+    return [...builtIn, ...custom];
+  }, [customExpenseSubcats, customIncomeSubcats]);
+
+  const addCustomSubcategory = useCallback(() => {
+    const name = newSubcatInput.trim();
+    if (!name || !form.category) return;
+    const setter = form.type === "expense" ? setCustomExpenseSubcats : setCustomIncomeSubcats;
+    setter((prev) => ({
+      ...prev,
+      [form.category]: prev[form.category]?.includes(name)
+        ? prev[form.category]
+        : [...(prev[form.category] ?? []), name],
+    }));
+    setForm((f) => ({ ...f, subcategory: name }));
+    setAddingSubcategory(false);
+    setNewSubcatInput("");
+  }, [newSubcatInput, form.category, form.type]);
 
   const activeEntityMeta = ENTITIES.find((e) => e.id === activeEntity)!;
 
@@ -953,7 +1022,9 @@ export function BudgetTracker() {
                   setEditingId(null);
                   setAddingCategory(false);
                   setNewCatInput("");
-                  setForm({ type: "expense", category: "", description: "", amount: "", date: today });
+                  setAddingSubcategory(false);
+    setNewSubcatInput("");
+    setForm({ type: "expense", category: "", subcategory: "", description: "", amount: "", date: today });
                 }
               }}>
               <DialogTrigger asChild>
@@ -975,7 +1046,7 @@ export function BudgetTracker() {
                           ? "bg-emerald-600 border-emerald-600 text-white hover:bg-emerald-700"
                           : "text-gray-400 hover:text-white hover:bg-gray-800"
                       )}
-                      onClick={() => setForm((f) => ({ ...f, type: "income", category: "" }))}
+                      onClick={() => setForm((f) => ({ ...f, type: "income", category: "", subcategory: "" }))}
                     >
                       <ArrowUp className="h-4 w-4 mr-1" /> Income
                     </Button>
@@ -987,7 +1058,7 @@ export function BudgetTracker() {
                           ? "bg-red-600 border-red-600 text-white hover:bg-red-700"
                           : "text-gray-400 hover:text-white hover:bg-gray-800"
                       )}
-                      onClick={() => setForm((f) => ({ ...f, type: "expense", category: "" }))}
+                      onClick={() => setForm((f) => ({ ...f, type: "expense", category: "", subcategory: "" }))}
                     >
                       <ArrowDown className="h-4 w-4 mr-1" /> Expense
                     </Button>
@@ -1002,8 +1073,9 @@ export function BudgetTracker() {
                           setAddingCategory(true);
                           setNewCatInput("");
                         } else {
-                          setForm((f) => ({ ...f, category: v }));
+                          setForm((f) => ({ ...f, category: v, subcategory: "" }));
                           setAddingCategory(false);
+                          setAddingSubcategory(false);
                         }
                       }}
                     >
@@ -1056,6 +1128,66 @@ export function BudgetTracker() {
                       </div>
                     )}
                   </div>
+
+                  {/* ── Sub-category selector (shown when category has sub-cats) ── */}
+                  {form.category && getSubcategories(form.type, form.category).length > 0 && (
+                    <div>
+                      <Label className="text-gray-300 text-sm">Sub-category <span className="text-gray-500 font-normal">(optional)</span></Label>
+                      <Select
+                        value={addingSubcategory ? "" : (form.subcategory || "__none__")}
+                        onValueChange={(v) => {
+                          if (v === "__add_new_sub__") {
+                            setAddingSubcategory(true);
+                            setNewSubcatInput("");
+                          } else if (v === "__none__") {
+                            setForm((f) => ({ ...f, subcategory: "" }));
+                            setAddingSubcategory(false);
+                          } else {
+                            setForm((f) => ({ ...f, subcategory: v }));
+                            setAddingSubcategory(false);
+                          }
+                        }}
+                      >
+                        <SelectTrigger className="bg-gray-800 border-gray-700 text-white mt-1">
+                          <SelectValue placeholder={addingSubcategory ? "Adding sub-category…" : "Select sub-category"} />
+                        </SelectTrigger>
+                        <SelectContent className="bg-gray-800 border-gray-700">
+                          <SelectItem value="__none__" className="text-gray-400 focus:bg-gray-700">— None —</SelectItem>
+                          <Separator className="my-1 bg-gray-700" />
+                          {getSubcategories(form.type, form.category).map((s) => (
+                            <SelectItem key={s} value={s} className="text-white focus:bg-gray-700">{s}</SelectItem>
+                          ))}
+                          <Separator className="my-1 bg-gray-700" />
+                          <SelectItem value="__add_new_sub__" className="text-blue-400 focus:bg-gray-700 focus:text-blue-300">+ New sub-category…</SelectItem>
+                        </SelectContent>
+                      </Select>
+
+                      {addingSubcategory && (
+                        <div className="flex gap-2 mt-2">
+                          <Input
+                            value={newSubcatInput}
+                            onChange={(e) => setNewSubcatInput(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") addCustomSubcategory();
+                              if (e.key === "Escape") { setAddingSubcategory(false); setNewSubcatInput(""); }
+                            }}
+                            placeholder="Sub-category name…"
+                            autoFocus
+                            className="bg-gray-800 border-gray-700 text-white placeholder:text-gray-500 h-8 text-sm"
+                          />
+                          <Button size="sm" onClick={addCustomSubcategory} disabled={!newSubcatInput.trim()}
+                            className="h-8 w-8 p-0 bg-emerald-600 hover:bg-emerald-700 flex-shrink-0">
+                            <Check className="h-4 w-4" />
+                          </Button>
+                          <Button size="sm" variant="ghost"
+                            onClick={() => { setAddingSubcategory(false); setNewSubcatInput(""); }}
+                            className="h-8 w-8 p-0 text-gray-400 hover:text-white flex-shrink-0">
+                            <X className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                   <div>
                     <Label className="text-gray-300 text-sm">Description</Label>
@@ -1129,13 +1261,21 @@ export function BudgetTracker() {
                         />
                         <div>
                           <div className="text-sm font-medium text-white">{t.description}</div>
-                          <div className="flex items-center gap-2 mt-0.5">
+                          <div className="flex items-center gap-2 mt-0.5 flex-wrap">
                             <Badge
                               variant="secondary"
                               className="text-xs bg-gray-800 text-gray-400 border-0 py-0 px-1.5"
                             >
                               {t.category}
                             </Badge>
+                            {t.subcategory && (
+                              <Badge
+                                variant="secondary"
+                                className="text-xs bg-gray-700/60 text-gray-400 border-0 py-0 px-1.5"
+                              >
+                                › {t.subcategory}
+                              </Badge>
+                            )}
                             <span className="text-xs text-gray-500">{t.date}</span>
                           </div>
                         </div>
