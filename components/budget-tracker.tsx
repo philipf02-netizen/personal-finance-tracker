@@ -1401,32 +1401,7 @@ export function BudgetTracker() {
                 </button>
               )}
             </div>
-            <div className="flex gap-1 flex-shrink-0">
-              {(["date", "description", "amount"] as const).map((field) => {
-                const labels: Record<string, string> = { date: "Date", description: "Name", amount: "Amount" };
-                const active = sortField === field;
-                return (
-                  <button
-                    key={field}
-                    type="button"
-                    onClick={() => toggleSort(field)}
-                    className={cn(
-                      "flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-medium border transition-colors",
-                      active
-                        ? "bg-gray-700 border-gray-600 text-white"
-                        : "border-gray-700 text-gray-500 hover:text-white hover:border-gray-600 bg-transparent"
-                    )}
-                  >
-                    {labels[field]}
-                    {active
-                      ? sortDir === "asc"
-                        ? <ChevronUp   className="h-3 w-3 ml-0.5" />
-                        : <ChevronDown className="h-3 w-3 ml-0.5" />
-                      : <ArrowUpDown className="h-3 w-3 ml-0.5 opacity-40" />}
-                  </button>
-                );
-              })}
-            </div>
+
           </div>
         </CardHeader>
         <CardContent className="p-0">
@@ -1595,6 +1570,40 @@ export function BudgetTracker() {
             </div>
           )}
 
+          {/* ── Table column headers (sortable) ───────────────────────── */}
+          <div className="grid items-center border-b border-gray-800 bg-gray-950 px-3"
+               style={{gridTemplateColumns: "32px 100px 1fr 120px 68px"}}>
+            <div />
+            {/* Date header */}
+            <button type="button" onClick={() => toggleSort("date")}
+              className={cn("flex items-center gap-1 py-2.5 text-left text-xs font-semibold uppercase tracking-wide transition-colors",
+                sortField === "date" ? "text-blue-400" : "text-gray-500 hover:text-gray-300")}>
+              Date
+              {sortField === "date"
+                ? sortDir === "asc" ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />
+                : <ArrowUpDown className="h-3 w-3 opacity-40" />}
+            </button>
+            {/* Name header */}
+            <button type="button" onClick={() => toggleSort("description")}
+              className={cn("flex items-center gap-1 py-2.5 text-left text-xs font-semibold uppercase tracking-wide transition-colors",
+                sortField === "description" ? "text-blue-400" : "text-gray-500 hover:text-gray-300")}>
+              Name / Category
+              {sortField === "description"
+                ? sortDir === "asc" ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />
+                : <ArrowUpDown className="h-3 w-3 opacity-40" />}
+            </button>
+            {/* Amount header */}
+            <button type="button" onClick={() => toggleSort("amount")}
+              className={cn("flex items-center justify-end gap-1 py-2.5 text-xs font-semibold uppercase tracking-wide transition-colors",
+                sortField === "amount" ? "text-blue-400" : "text-gray-500 hover:text-gray-300")}>
+              Amount
+              {sortField === "amount"
+                ? sortDir === "asc" ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />
+                : <ArrowUpDown className="h-3 w-3 opacity-40" />}
+            </button>
+            <div />
+          </div>
+
           <ScrollArea className="h-72">
             {filteredTransactions.length === 0 ? (
               <div className="p-8 text-center text-gray-500 text-sm">
@@ -1608,65 +1617,51 @@ export function BudgetTracker() {
                   <div key={t.id}>
                     {idx > 0 && <Separator className="bg-gray-800" />}
                     <div className={cn(
-                      "flex items-center justify-between px-4 py-3 transition-colors",
+                      "grid items-center px-3 py-2.5 transition-colors",
                       selectedTxIds.has(t.id) ? "bg-blue-950/40" : "hover:bg-gray-800/40"
-                    )}>
-                      <div className="flex items-center gap-3">
-                        <Checkbox
-                          checked={selectedTxIds.has(t.id)}
-                          onCheckedChange={() => toggleSelectTx(t.id)}
-                          className="border-gray-600 data-[state=checked]:bg-blue-600 data-[state=checked]:border-blue-600 flex-shrink-0"
-                        />
-                        <div
-                          className={cn(
-                            "w-1 h-10 rounded-full flex-shrink-0",
-                            t.type === "income" ? "bg-emerald-500" : "bg-red-500"
-                          )}
-                        />
-                        <div>
-                          <div className="text-sm font-medium text-white">{t.description}</div>
-                          <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-                            <Badge
-                              variant="secondary"
-                              className="text-xs bg-gray-800 text-gray-400 border-0 py-0 px-1.5"
-                            >
-                              {t.category}
+                    )}
+                    style={{gridTemplateColumns: "32px 100px 1fr 120px 68px"}}>
+                      {/* Checkbox */}
+                      <Checkbox
+                        checked={selectedTxIds.has(t.id)}
+                        onCheckedChange={() => toggleSelectTx(t.id)}
+                        className="border-gray-600 data-[state=checked]:bg-blue-600 data-[state=checked]:border-blue-600"
+                      />
+                      {/* Date */}
+                      <div className="tabular-nums text-xs text-gray-400 pr-2 leading-tight">
+                        {t.date}
+                      </div>
+                      {/* Name + category */}
+                      <div className="min-w-0 pr-2">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <div className={cn("w-1 h-3.5 rounded-full flex-shrink-0",
+                            t.type === "income" ? "bg-emerald-500" : "bg-red-500")} />
+                          <span className="text-sm font-medium text-white truncate">{t.description}</span>
+                        </div>
+                        <div className="flex items-center gap-1.5 mt-0.5 flex-wrap pl-2.5">
+                          <Badge variant="secondary" className="text-xs bg-gray-800 text-gray-400 border-0 py-0 px-1.5">
+                            {t.category}
+                          </Badge>
+                          {t.subcategory && (
+                            <Badge variant="secondary" className="text-xs bg-gray-700/60 text-gray-400 border-0 py-0 px-1.5">
+                              › {t.subcategory}
                             </Badge>
-                            {t.subcategory && (
-                              <Badge
-                                variant="secondary"
-                                className="text-xs bg-gray-700/60 text-gray-400 border-0 py-0 px-1.5"
-                              >
-                                › {t.subcategory}
-                              </Badge>
-                            )}
-                            <span className="text-xs text-gray-500">{t.date}</span>
-                          </div>
+                          )}
                         </div>
                       </div>
-                      <div className="flex items-center gap-2 flex-shrink-0">
-                        <span
-                          className={cn(
-                            "font-semibold text-sm",
-                            t.type === "income" ? "text-emerald-400" : "text-red-400"
-                          )}
-                        >
-                          {t.type === "income" ? "+" : "−"}${t.amount.toLocaleString()}
-                        </span>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => startEdit(t)}
-                          className="text-gray-600 hover:text-blue-400 hover:bg-transparent p-1 h-auto"
-                        >
+                      {/* Amount */}
+                      <div className={cn("tabular-nums font-semibold text-sm text-right pr-2",
+                        t.type === "income" ? "text-emerald-400" : "text-red-400")}>
+                        {t.type === "income" ? "+" : "−"}${t.amount.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                      </div>
+                      {/* Actions */}
+                      <div className="flex items-center justify-end gap-0.5">
+                        <Button variant="ghost" size="sm" onClick={() => startEdit(t)}
+                          className="text-gray-600 hover:text-blue-400 hover:bg-transparent p-1 h-auto">
                           <Pencil className="h-3.5 w-3.5" />
                         </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => deleteTransaction(t.id)}
-                          className="text-gray-600 hover:text-red-400 hover:bg-transparent p-1 h-auto"
-                        >
+                        <Button variant="ghost" size="sm" onClick={() => deleteTransaction(t.id)}
+                          className="text-gray-600 hover:text-red-400 hover:bg-transparent p-1 h-auto">
                           <Trash className="h-3.5 w-3.5" />
                         </Button>
                       </div>
