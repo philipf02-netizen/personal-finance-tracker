@@ -503,6 +503,7 @@ export function BudgetTracker() {
     description: "",
     amount: "",
     date: today,
+    entity: "personal" as EntityType,
   });
 
   // CSV import state
@@ -608,6 +609,7 @@ export function BudgetTracker() {
                 description: form.description,
                 amount: parseFloat(form.amount),
                 date: form.date,
+                entity: form.entity,
               }
             : t
         )
@@ -629,7 +631,7 @@ export function BudgetTracker() {
     }
     setAddingSubcategory(false);
     setNewSubcatInput("");
-    setForm({ type: "expense", category: "", subcategory: "", description: "", amount: "", date: today });
+    setForm({ type: "expense", category: "", subcategory: "", description: "", amount: "", date: today, entity: activeEntity });
     setOpen(false);
   }, [form, editingId, activeEntity]);
 
@@ -645,6 +647,7 @@ export function BudgetTracker() {
       description: t.description,
       amount: t.amount.toString(),
       date: t.date,
+      entity: (t.entity ?? "personal") as EntityType,
     });
     setEditingId(t.id);
     setOpen(true);
@@ -1024,7 +1027,7 @@ export function BudgetTracker() {
                   setNewCatInput("");
                   setAddingSubcategory(false);
     setNewSubcatInput("");
-    setForm({ type: "expense", category: "", subcategory: "", description: "", amount: "", date: today });
+    setForm({ type: "expense", category: "", subcategory: "", description: "", amount: "", date: today, entity: activeEntity });
                 }
               }}>
               <DialogTrigger asChild>
@@ -1063,6 +1066,29 @@ export function BudgetTracker() {
                       <ArrowDown className="h-4 w-4 mr-1" /> Expense
                     </Button>
                   </div>
+
+                  {editingId && (
+                    <div>
+                      <Label className="text-gray-300 text-sm">Entity</Label>
+                      <div className="grid grid-cols-3 gap-2 mt-1">
+                        {ENTITIES.map((e) => (
+                          <button
+                            key={e.id}
+                            type="button"
+                            onClick={() => setForm((f) => ({ ...f, entity: e.id }))}
+                            className={cn(
+                              "rounded-md px-2 py-1.5 text-xs font-medium border transition-colors",
+                              form.entity === e.id
+                                ? `${e.activeBg} border-transparent text-white`
+                                : "border-gray-600 text-gray-400 hover:text-white hover:border-gray-500 bg-transparent"
+                            )}
+                          >
+                            {e.short}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
 
                   <div>
                     <Label className="text-gray-300 text-sm">Category</Label>
