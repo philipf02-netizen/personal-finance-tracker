@@ -39,6 +39,7 @@ import {
   Plus,
   Trash,
   Pencil,
+  X,
   DollarSign,
   Activity,
   ArrowUp,
@@ -491,14 +492,32 @@ export function BudgetTracker() {
   const [activeEntity, setActiveEntity] = useState<EntityType>("personal");
   const [editingId, setEditingId] = useState<string | null>(null);
 
+  // ── Custom categories ───────────────────────────────────────────────────
+  const [customExpenseCats, setCustomExpenseCats] = useState<string[]>([]);
+  const [customIncomeCats, setCustomIncomeCats]  = useState<string[]>([]);
+  const [addingCategory, setAddingCategory]      = useState(false);
+  const [newCatInput, setNewCatInput]            = useState("");
+
   useEffect(() => {
     const saved = localStorage.getItem("ft-transactions");
     setTransactions(saved ? JSON.parse(saved) : DEFAULT_TRANSACTIONS);
+    const savedExpCats = localStorage.getItem("ft-custom-expense-cats");
+    const savedIncCats = localStorage.getItem("ft-custom-income-cats");
+    if (savedExpCats) setCustomExpenseCats(JSON.parse(savedExpCats));
+    if (savedIncCats) setCustomIncomeCats(JSON.parse(savedIncCats));
   }, []);
 
   useEffect(() => {
     localStorage.setItem("ft-transactions", JSON.stringify(transactions));
   }, [transactions]);
+
+  useEffect(() => {
+    localStorage.setItem("ft-custom-expense-cats", JSON.stringify(customExpenseCats));
+  }, [customExpenseCats]);
+
+  useEffect(() => {
+    localStorage.setItem("ft-custom-income-cats", JSON.stringify(customIncomeCats));
+  }, [customIncomeCats]);
 
   // ── Filter transactions to active entity (existing data defaults to "personal") ──
   const filteredTransactions = useMemo(
@@ -663,7 +682,22 @@ export function BudgetTracker() {
     resetCsvDialog();
   }, [csvRows, selectedIds, resetCsvDialog, activeEntity]);
 
-  const categories = form.type === "income" ? INCOME_CATEGORIES : EXPENSE_CATEGORIES;
+  const categories = form.type === "income"
+    ? [...INCOME_CATEGORIES, ...customIncomeCats]
+    : [...EXPENSE_CATEGORIES, ...customExpenseCats];
+
+  const addCustomCategory = useCallback(() => {
+    const name = newCatInput.trim();
+    if (!name) return;
+    if (form.type === "expense") {
+      setCustomExpenseCats((prev) => prev.includes(name) ? prev : [...prev, name]);
+    } else {
+      setCustomIncomeCats((prev) => prev.includes(name) ? prev : [...prev, name]);
+    }
+    setForm((f) => ({ ...f, category: name }));
+    setAddingCategory(false);
+    setNewCatInput("");
+  }, [newCatInput, form.type]);
 
   const activeEntityMeta = ENTITIES.find((e) => e.id === activeEntity)!;
 
@@ -917,6 +951,8 @@ export function BudgetTracker() {
                 setOpen(o);
                 if (!o) {
                   setEditingId(null);
+                  setAddingCategory(false);
+                  setNewCatInput("");
                   setForm({ type: "expense", category: "", description: "", amount: "", date: today });
                 }
               }}>
@@ -960,11 +996,19 @@ export function BudgetTracker() {
                   <div>
                     <Label className="text-gray-300 text-sm">Category</Label>
                     <Select
-                      value={form.category}
-                      onValueChange={(v) => setForm((f) => ({ ...f, category: v }))}
+                      value={addingCategory ? "" : form.category}
+                      onValueChange={(v) => {
+                        if (v === "__add_new__") {
+                          setAddingCategory(true);
+                          setNewCatInput("");
+                        } else {
+                          setForm((f) => ({ ...f, category: v }));
+                          setAddingCategory(false);
+                        }
+                      }}
                     >
                       <SelectTrigger className="bg-gray-800 border-gray-700 text-white mt-1">
-                        <SelectValue placeholder="Select category" />
+                        <SelectValue placeholder={addingCategory ? "Adding new category…" : "Select category"} />
                       </SelectTrigger>
                       <SelectContent className="bg-gray-800 border-gray-700">
                         {categories.map((c) => (
@@ -972,8 +1016,45 @@ export function BudgetTracker() {
                             {c}
                           </SelectItem>
                         ))}
+                        <Separator className="my-1 bg-gray-700" />
+                        <SelectItem value="__add_new__" className="text-blue-400 focus:bg-gray-700 focus:text-blue-300">
+                          + New category…
+                        </SelectItem>
                       </SelectContent>
                     </Select>
+
+                    {/* Inline new-category input */}
+                    {addingCategory && (
+                      <div className="flex gap-2 mt-2">
+                        <Input
+                          value={newCatInput}
+                          onChange={(e) => setNewCatInput(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") addCustomCategory();
+                            if (e.key === "Escape") { setAddingCategory(false); setNewCatInput(""); }
+                          }}
+                          placeholder="Category name…"
+                          autoFocus
+                          className="bg-gray-800 border-gray-700 text-white placeholder:text-gray-500 h-8 text-sm"
+                        />
+                        <Button
+                          size="sm"
+                          onClick={addCustomCategory}
+                          disabled={!newCatInput.trim()}
+                          className="h-8 w-8 p-0 bg-emerald-600 hover:bg-emerald-700 flex-shrink-0"
+                        >
+                          <Check className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => { setAddingCategory(false); setNewCatInput(""); }}
+                          className="h-8 w-8 p-0 text-gray-400 hover:text-white flex-shrink-0"
+                        >
+                          <X className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    )}
                   </div>
 
                   <div>
@@ -1250,7 +1331,7 @@ export function BudgetTracker() {
                                   <SelectValue />
                                 </SelectTrigger>
                                 <SelectContent className="bg-gray-800 border-gray-700">
-                                  {(row.type === "income" ? INCOME_CATEGORIES : EXPENSE_CATEGORIES).map((c) => (
+                                  {(row.type === "income" ? [...INCOME_CATEGORIES, ...customIncomeCats] : [...EXPENSE_CATEGORIES, ...customExpenseCats]).map((c) => (
                                     <SelectItem key={c} value={c} className="text-white text-xs focus:bg-gray-700">
                                       {c}
                                     </SelectItem>
