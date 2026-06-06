@@ -518,6 +518,7 @@ export function BudgetTracker() {
   // ── Entity & edit state ────────────────────────────────────────────────
   const [activeEntity, setActiveEntity] = useState<EntityType>("personal");
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [storageLoaded, setStorageLoaded] = useState(false);
 
   // ── Custom categories ───────────────────────────────────────────────────
   const [customExpenseCats, setCustomExpenseCats] = useState<string[]>([]);
@@ -540,27 +541,33 @@ export function BudgetTracker() {
     const savedIncSubcats = localStorage.getItem("ft-custom-income-subcats");
     if (savedExpSubcats) setCustomExpenseSubcats(JSON.parse(savedExpSubcats));
     if (savedIncSubcats) setCustomIncomeSubcats(JSON.parse(savedIncSubcats));
+    setStorageLoaded(true);
   }, []);
 
   useEffect(() => {
+    if (!storageLoaded) return;
     localStorage.setItem("ft-transactions", JSON.stringify(transactions));
-  }, [transactions]);
+  }, [transactions, storageLoaded]);
 
   useEffect(() => {
+    if (!storageLoaded) return;
     localStorage.setItem("ft-custom-expense-cats", JSON.stringify(customExpenseCats));
-  }, [customExpenseCats]);
+  }, [customExpenseCats, storageLoaded]);
 
   useEffect(() => {
+    if (!storageLoaded) return;
     localStorage.setItem("ft-custom-income-cats", JSON.stringify(customIncomeCats));
-  }, [customIncomeCats]);
+  }, [customIncomeCats, storageLoaded]);
 
   useEffect(() => {
+    if (!storageLoaded) return;
     localStorage.setItem("ft-custom-expense-subcats", JSON.stringify(customExpenseSubcats));
-  }, [customExpenseSubcats]);
+  }, [customExpenseSubcats, storageLoaded]);
 
   useEffect(() => {
+    if (!storageLoaded) return;
     localStorage.setItem("ft-custom-income-subcats", JSON.stringify(customIncomeSubcats));
-  }, [customIncomeSubcats]);
+  }, [customIncomeSubcats, storageLoaded]);
 
   // ── Filter transactions to active entity (existing data defaults to "personal") ──
   const filteredTransactions = useMemo(
